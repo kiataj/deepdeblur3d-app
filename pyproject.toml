@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deblur3d-gui"
+version = "0.1.0"
+description = "Napari GUI for DeepDeBlur3D with Hugging Face model auto-download"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Kiarash Tajbakhsh" }]
+
+dependencies = [
+  "numpy<2",
+  "tifffile>=2023.2.3",
+  "torch>=1.12,<2.0",
+  "torchvision>=0.13,<0.14",
+  "tqdm",
+  "napari[all]",
+  "magicgui>=0.8",
+  "superqt>=0.6",
+  "matplotlib",
+  "huggingface_hub>=0.23",
+  "platformdirs>=3",
+  "safetensors>=0.4",
+]
+
+[project.scripts]
+deblur3d-gui = "deblur3d_app.gui:main"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["deblur3d*", "deblur3d_app*"]
