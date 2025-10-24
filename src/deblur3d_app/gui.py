@@ -12,7 +12,14 @@ from typing import Tuple, List, Optional
 from packaging.version import Version, InvalidVersion
 
 import numpy as np
-import torch
+try:
+    import torch  # noqa
+except Exception as e:
+    raise RuntimeError(
+        "PyTorch is not installed. Install CPU: `pip install -e .[cpu]` "
+        "or CUDA 11.6: `pip install -e .[cu116] --extra-index-url https://download.pytorch.org/whl/cu116`"
+    ) from e
+    
 import tifffile as tiff
 
 from magicgui import magicgui
