@@ -6,6 +6,18 @@ import torch.nn.functional as F
 
 __all__ = ["deblur_volume_tiled"]
 
+def _starts(L: int, tile: int, overlap: int) -> list[int]:
+    # step for interior tiles
+    step = tile - overlap if tile < L else L
+    # initial evenly spaced starts
+    starts = list(range(0, max(1, L - tile + 1), step))
+    # ensure the last tile reaches the border
+    last = max(0, L - tile)
+    if starts[-1] != last:
+        starts.append(last)
+    return starts
+
+
 @torch.no_grad()
 def deblur_volume_tiled(
     net: torch.nn.Module,
@@ -67,11 +79,14 @@ def deblur_volume_tiled(
     # Import here to avoid requiring CUDA on CPUs
     from torch.cuda.amp import autocast
 
-    for z in range(0, max(1, D - td + 1), step_z):
-        for y in range(0, max(1, H - th + 1), step_y):
-            for x in range(0, max(1, W - tw + 1), step_x):
-                patch = v[:, :, z:z + td, y:y + th, x:x + tw]
-                # pad to tile if at the border
+    zs = _starts(D, td, od)
+    ys = _starts(H, th, oh)
+    xs = _starts(W, tw, ow)
+
+    for z in zs:
+        for y in ys:
+            for x in xs:
+                patch = v[:, :, z:z+td, y:y+th, x:x+tw]
                 if patch.shape[2:] != (td, th, tw):
                     padz = td - patch.shape[2]
                     pady = th - patch.shape[3]
@@ -81,13 +96,13 @@ def deblur_volume_tiled(
                 with autocast(enabled=(use_amp and device_t.type == "cuda")):
                     pred = net(patch)
 
-                # crop back to valid region for this tile
                 pd = min(td, D - z); ph = min(th, H - y); pw = min(tw, W - x)
+                w  = w3[:, :, :pd, :ph, :pw]
                 pred = pred[:, :, :pd, :ph, :pw]
-                w = w3[:, :, :pd, :ph, :pw]
 
-                out[:, :, z:z + pd, y:y + ph, x:x + pw] += pred * w
-                wei[:, :, z:z + pd, y:y + ph, x:x + pw] += w
+                out[:, :, z:z+pd, y:y+ph, x:x+pw] += pred * w
+                wei[:, :, z:z+pd, y:y+ph, x:x+pw] += w
+
 
     res = (out / (wei + 1e-8)).squeeze(0).squeeze(0)
     if clamp01:
