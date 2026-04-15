@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DeepDeblur3D Before and After Comparison</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: rgba(13, 18, 33, 0.9);
+      --text: #e8eefc;
+      --muted: #a6b1d1;
+      --accent: #78d7ff;
+      --border: rgba(255, 255, 255, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(120, 215, 255, 0.14), transparent 32%),
+        linear-gradient(180deg, #0f1730 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .card {
+      width: min(1120px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+      backdrop-filter: blur(14px);
+    }
+
+    .header {
+      padding: 20px 22px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.4rem, 2vw, 2rem);
+      letter-spacing: 0.01em;
+    }
+
+    .header p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .viewer {
+      position: relative;
+      aspect-ratio: 1 / 1;
+      overflow: hidden;
+      background: #05070d;
+    }
+
+    .viewer img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      user-select: none;
+      pointer-events: none;
+    }
+
+    .after {
+      clip-path: inset(0 50% 0 0);
+    }
+
+    .divider {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 2px;
+      transform: translateX(-1px);
+      background: linear-gradient(180deg, transparent, var(--accent), transparent);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+    }
+
+    .handle {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 44px;
+      height: 44px;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      background: rgba(8, 12, 22, 0.8);
+      display: grid;
+      place-items: center;
+      color: var(--accent);
+      font-size: 20px;
+      pointer-events: none;
+    }
+
+    .controls {
+      display: grid;
+      gap: 10px;
+      padding: 18px 22px 22px;
+    }
+
+    .controls label {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .footer {
+      padding: 0 22px 22px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .badge {
+      color: var(--accent);
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <section class="header">
+      <h1>DeepDeblur3D comparison slider</h1>
+      <p>Move the divider to compare the original image with the filtered result.</p>
+    </section>
+
+    <section class="viewer" aria-label="Before and after image comparison viewer">
+      <img src="S0017-1.png" alt="Original image">
+      <img class="after" id="afterImage" src="filtered_s1.0_hps1.00_hpg0.20_lpg1.00_14-1.png" alt="Filtered image">
+      <div class="divider" id="divider"></div>
+      <div class="handle" id="handle" aria-hidden="true">↔</div>
+    </section>
+
+    <section class="controls">
+      <label for="slider">
+        <span>Original</span>
+        <span class="badge">Filtered</span>
+      </label>
+      <input id="slider" type="range" min="0" max="100" value="50" aria-label="Comparison slider">
+    </section>
+
+    <div class="footer">
+      Open this file directly in a browser. The images are stored in the same folder as this page.
+    </div>
+  </main>
+
+  <script>
+    const slider = document.getElementById('slider');
+    const afterImage = document.getElementById('afterImage');
+    const divider = document.getElementById('divider');
+    const handle = document.getElementById('handle');
+
+    function updateSlider(value) {
+      const percent = `${value}%`;
+      afterImage.style.clipPath = `inset(0 ${100 - value}% 0 0)`;
+      divider.style.left = percent;
+      handle.style.left = percent;
+      slider.setAttribute('aria-valuenow', value);
+    }
+
+    slider.addEventListener('input', (event) => updateSlider(event.target.value));
+    updateSlider(slider.value);
+  </script>
+</body>
+</html>
