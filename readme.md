@@ -122,3 +122,7 @@ Update your NVIDIA driver before installing the CUDA wheels if needed.
 ```bash
 deblur3d-gui
 ```
+
+## Citation
+
+K. Tajbakhsh, R. Zboray, "DeepDeblur3D: A 3D U-Net for denoising and deblurring micro-CT data," *Tomography of Materials and Structures*, vol. 11, p. 100088, 2026. https://doi.org/10.1016/j.tmater.2026.100088
