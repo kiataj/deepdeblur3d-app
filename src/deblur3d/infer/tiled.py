@@ -4,7 +4,65 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-__all__ = ["deblur_volume_tiled"]
+__all__ = ["deblur_volume_tiled", "validate_tiling", "validate_volume_shape"]
+
+MIN_VOLUME_SIZE = 16
+
+
+def validate_volume_shape(shape, minimum_size: int = MIN_VOLUME_SIZE) -> tuple[int, int, int]:
+    """Validate a volume against the four-level 3D U-Net input requirements."""
+    shape = tuple(int(size) for size in shape)
+    if len(shape) != 3:
+        raise ValueError(
+            f"DeepDeblur3D requires a 3D volume with shape (Z, Y, X); got {shape}. "
+            "Load TIFF slices as one stack (Napari: Open Files as Stack)."
+        )
+
+    axes = ("Z", "Y", "X")
+    too_small = [f"{axis}={size}" for axis, size in zip(axes, shape) if size < minimum_size]
+    if too_small:
+        raise ValueError(
+            f"DeepDeblur3D requires at least {minimum_size} voxels in every dimension "
+            f"(Z, Y, X) because of the model's downsampling stages; got {shape} "
+            f"({', '.join(too_small)} is too small). Load at least {minimum_size} slices "
+            "as one 3D stack when Z is the limiting dimension."
+        )
+    return shape
+
+
+def validate_tiling(
+    tile, overlap, minimum_size: int = MIN_VOLUME_SIZE
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """Validate tile sizes and overlaps before allocating inference tensors."""
+    tile = tuple(int(size) for size in tile)
+    overlap = tuple(int(size) for size in overlap)
+    if len(tile) != 3 or len(overlap) != 3:
+        raise ValueError(
+            f"Tile and overlap must both have shape (Z, Y, X); got "
+            f"tile={tile}, overlap={overlap}."
+        )
+
+    axes = ("Z", "Y", "X")
+    too_small = [f"{axis}={size}" for axis, size in zip(axes, tile) if size < minimum_size]
+    if too_small:
+        raise ValueError(
+            f"Each tile dimension must be at least {minimum_size} voxels for this model; "
+            f"got tile={tile} ({', '.join(too_small)} is too small)."
+        )
+
+    invalid_overlaps = [
+        f"{axis}: overlap={ov}, tile={size}"
+        for axis, ov, size in zip(axes, overlap, tile)
+        if ov < 0 or ov >= size
+    ]
+    if invalid_overlaps:
+        raise ValueError(
+            "Each overlap must be non-negative and smaller than its tile dimension; "
+            + "; ".join(invalid_overlaps)
+            + "."
+        )
+    return tile, overlap
+
 
 def _starts(L: int, tile: int, overlap: int) -> list[int]:
     # step for interior tiles
@@ -53,21 +111,25 @@ def deblur_volume_tiled(
         v = torch.from_numpy(vol)
     else:
         v = vol
-    assert v.dim() == 3, "vol must be (D,H,W)"
+
+    down_layers = getattr(net, "down", None)
+    minimum_tile_size = 2 ** len(down_layers) if down_layers is not None else MIN_VOLUME_SIZE
+    validate_volume_shape(v.shape, minimum_size=minimum_tile_size)
+    tile, overlap = validate_tiling(tile, overlap, minimum_size=minimum_tile_size)
     v = v.to(device_t, dtype=torch.float32, non_blocking=True).unsqueeze(0).unsqueeze(0)  # (1,1,D,H,W)
 
     D, H, W = int(v.shape[2]), int(v.shape[3]), int(v.shape[4])
-    td, th, tw = map(int, tile)
+    td, th, tw = (min(size, extent) for size, extent in zip(tile, (D, H, W)))
     od, oh, ow = map(int, overlap)
 
     out = torch.zeros((1, 1, D, H, W), dtype=torch.float32, device=device_t)
     wei = torch.zeros_like(out)
 
     def _hann(sz: int, ov: int):
-        if sz <= 1:
-            return torch.ones(1, device=device_t)
+        if sz <= 1 or ov <= 0:
+            return torch.ones(sz, device=device_t)
         g = torch.hann_window(sz, periodic=False, device=device_t)
-        return g.clamp_min(1e-6) if ov > 0 else g
+        return g.clamp_min(1e-6)
 
     wz, wy, wx = _hann(td, od), _hann(th, oh), _hann(tw, ow)
     w3 = wz.view(1, 1, td, 1, 1) * wy.view(1, 1, 1, th, 1) * wx.view(1, 1, 1, 1, tw)
@@ -104,7 +166,7 @@ def deblur_volume_tiled(
                 wei[:, :, z:z+pd, y:y+ph, x:x+pw] += w
 
 
-    res = (out / (wei + 1e-8)).squeeze(0).squeeze(0)
+    res = (out / wei.clamp_min(torch.finfo(wei.dtype).tiny)).squeeze(0).squeeze(0)
     if clamp01:
         res = res.clamp(0, 1)
     return res.detach().cpu().numpy().astype(np.float32)

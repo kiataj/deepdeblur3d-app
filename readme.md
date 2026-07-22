@@ -123,6 +123,14 @@ Update your NVIDIA driver before installing the CUDA wheels if needed.
 deblur3d-gui
 ```
 
+### Selecting the input layer
+
+When **Run Filter** is clicked, DeepDeblur3D processes the currently active
+3D image layer in Napari. Select the intended source in the Layers panel before
+starting a run. Filtered results are added as separate layers, while the source
+layer remains active so parameter changes can reuse its cached residual. To
+process a different volume or a filtered result, select that layer explicitly.
+
 ## Citation
 
 K. Tajbakhsh, R. Zboray, "DeepDeblur3D: A 3D U-Net for denoising and deblurring micro-CT data," *Tomography of Materials and Structures*, vol. 11, p. 100088, 2026. https://doi.org/10.1016/j.tmater.2026.100088

@@ -44,7 +44,11 @@ from ._workers import make_infer_worker
 
 # ---- Project imports ----
 from deblur3d.data.io import read_volume_float01
-from deblur3d.infer.tiled import deblur_volume_tiled
+from deblur3d.infer.tiled import (
+    deblur_volume_tiled,
+    validate_tiling,
+    validate_volume_shape,
+)
 from deblur3d.models import UNet3D_Residual, ControlledUNet3D
 
 # =========================
@@ -344,6 +348,7 @@ def run_infer_bound(
     config_path: Optional[str],
     reuse_cache: bool = True,
 ) -> np.ndarray:
+    validate_volume_shape(np.asarray(vol_f32_01).shape)
     base, dev = _cached_model_from_paths(weights_path, config_path, device)
     vol_f32_01 = _normalize_float01_like_io(np.asarray(vol_f32_01))
 
@@ -399,7 +404,7 @@ def build_viewer() -> Viewer:
             return True
 
         data = np.asarray(layer.data)
-        if data.ndim not in (2, 3):
+        if data.ndim != 3:
             return False
         try:
             norm = _normalize_float01_like_io(data)
@@ -416,7 +421,7 @@ def build_viewer() -> Viewer:
 
     def _update_run_enabled_from_active():
         active = v.layers.selection.active
-        enable = isinstance(active, NapariImage) and getattr(active.data, "ndim", 0) in (2, 3)
+        enable = isinstance(active, NapariImage) and getattr(active.data, "ndim", 0) == 3
         infer_w.enabled = bool(enable)
         clear_cache_btn.enabled = True
 
@@ -444,7 +449,7 @@ def build_viewer() -> Viewer:
         device={"choices": ["cuda", "cpu"]},
         tile_x={"label": "Tile X", "min": 16, "max": 512, "step": 16, "value": 256},
         tile_y={"label": "Tile Y", "min": 16, "max": 512, "step": 16, "value": 256},
-        tile_z={"label": "Tile Z", "min": 8,  "max": 128, "step": 8,  "value": 64},
+        tile_z={"label": "Tile Z", "min": 16, "max": 128, "step": 8,  "value": 64},
         ov_x={"label": "Overlap X", "min": 0, "max": 256, "step": 8, "value": 128},
         ov_y={"label": "Overlap Y", "min": 0, "max": 256, "step": 8, "value": 128},
         ov_z={"label": "Overlap Z", "min": 0, "max": 64,  "step": 4, "value": 32},
@@ -475,13 +480,22 @@ def build_viewer() -> Viewer:
             return ("cuda" in msg or "cudnn" in msg or "device-side assert" in msg)
 
         active = v.layers.selection.active
-        if not (isinstance(active, NapariImage) and getattr(active.data, "ndim", 0) in (2, 3)):
-            show_warning("Select an image layer (2D/3D) as input.")
+        if not (isinstance(active, NapariImage) and getattr(active.data, "ndim", 0) == 3):
+            show_warning(
+                "Select a 3D image layer. For TIFF slices, use Napari's "
+                "'Open Files as Stack' option."
+            )
             return
 
         vol = _normalize_float01_like_io(np.asarray(active.data))
         tile = (tile_z, tile_y, tile_x)   # (Z, Y, X)
         overlap = (ov_z, ov_y, ov_x)
+        try:
+            validate_volume_shape(vol.shape)
+            tile, overlap = validate_tiling(tile, overlap)
+        except ValueError as e:
+            show_error(str(e))
+            return
 
         try:
             desired_spec = HFModelSpec(repo_id=HF_REPO_ID, weights_filename=HF_FILENAME, revision=None)
@@ -538,15 +552,16 @@ def build_viewer() -> Viewer:
                     f"{run_id}"
                 )
                 lyr = v.add_image(
-                    pred, name=layer_name, colormap="magenta",
-                    blending="additive", opacity=0.7
+                    pred, name=layer_name, colormap="gray",
+                    blending="translucent", opacity=0.7,
+                    metadata={"deblur3d_output": True},
                 )
-                # tag and stabilize contrast so slider behaves correctly
-                if getattr(lyr, "metadata", None) is not None:
-                    lyr.metadata["deblur3d_output"] = True
+                # Stabilize contrast so the slider behaves correctly.
                 _stabilize_contrast(lyr, 0.0, 1.0)
 
                 lyr.grid_position = (0, 1)
+                if active in v.layers:
+                    v.layers.selection.active = active
                 show_info(f"Inference #{run_id} done in {dt:.2f}s on {device_to_use.upper()} | shape={pred.shape}")
                 print(f"[DeepDeBlur3D] Inference #{run_id} done in {dt:.2f}s on {device_to_use}")
                 v.grid.enabled = True
