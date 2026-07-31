@@ -102,11 +102,14 @@ def deblur_volume_tiled(
 
     Returns:
         (D,H,W) float32 numpy array.
+
+    The volume and the blending accumulators stay in host memory; only one tile is
+    resident on `device` at a time, so device memory is O(tile), not O(volume).
     """
     net.eval()
     device_t = torch.device(device if (device == "cuda" and torch.cuda.is_available()) else "cpu")
 
-    # normalize input → torch on device
+    # normalize input → torch on host
     if isinstance(vol, np.ndarray):
         v = torch.from_numpy(vol)
     else:
@@ -116,13 +119,13 @@ def deblur_volume_tiled(
     minimum_tile_size = 2 ** len(down_layers) if down_layers is not None else MIN_VOLUME_SIZE
     validate_volume_shape(v.shape, minimum_size=minimum_tile_size)
     tile, overlap = validate_tiling(tile, overlap, minimum_size=minimum_tile_size)
-    v = v.to(device_t, dtype=torch.float32, non_blocking=True).unsqueeze(0).unsqueeze(0)  # (1,1,D,H,W)
+    v = v.to("cpu", dtype=torch.float32).reshape(1, 1, *v.shape)  # (1,1,D,H,W)
 
     D, H, W = int(v.shape[2]), int(v.shape[3]), int(v.shape[4])
     td, th, tw = (min(size, extent) for size, extent in zip(tile, (D, H, W)))
     od, oh, ow = map(int, overlap)
 
-    out = torch.zeros((1, 1, D, H, W), dtype=torch.float32, device=device_t)
+    out = torch.zeros((1, 1, D, H, W), dtype=torch.float32)
     wei = torch.zeros_like(out)
 
     def _hann(sz: int, ov: int):
@@ -133,6 +136,7 @@ def deblur_volume_tiled(
 
     wz, wy, wx = _hann(td, od), _hann(th, oh), _hann(tw, ow)
     w3 = wz.view(1, 1, td, 1, 1) * wy.view(1, 1, 1, th, 1) * wx.view(1, 1, 1, 1, tw)
+    w3_cpu = w3.to("cpu")
 
     step_z = td - od if td < D else D
     step_y = th - oh if th < H else H
@@ -148,7 +152,7 @@ def deblur_volume_tiled(
     for z in zs:
         for y in ys:
             for x in xs:
-                patch = v[:, :, z:z+td, y:y+th, x:x+tw]
+                patch = v[:, :, z:z+td, y:y+th, x:x+tw].to(device_t, non_blocking=True)
                 if patch.shape[2:] != (td, th, tw):
                     padz = td - patch.shape[2]
                     pady = th - patch.shape[3]
@@ -159,14 +163,16 @@ def deblur_volume_tiled(
                     pred = net(patch)
 
                 pd = min(td, D - z); ph = min(th, H - y); pw = min(tw, W - x)
-                w  = w3[:, :, :pd, :ph, :pw]
-                pred = pred[:, :, :pd, :ph, :pw]
+                weighted = (pred[:, :, :pd, :ph, :pw] * w3[:, :, :pd, :ph, :pw]).to("cpu")
 
-                out[:, :, z:z+pd, y:y+ph, x:x+pw] += pred * w
-                wei[:, :, z:z+pd, y:y+ph, x:x+pw] += w
+                out[:, :, z:z+pd, y:y+ph, x:x+pw] += weighted
+                wei[:, :, z:z+pd, y:y+ph, x:x+pw] += w3_cpu[:, :, :pd, :ph, :pw]
+                del patch, pred, weighted
 
+    if device_t.type == "cuda":
+        torch.cuda.empty_cache()
 
     res = (out / wei.clamp_min(torch.finfo(wei.dtype).tiny)).squeeze(0).squeeze(0)
     if clamp01:
         res = res.clamp(0, 1)
-    return res.detach().cpu().numpy().astype(np.float32)
+    return res.detach().numpy().astype(np.float32)
