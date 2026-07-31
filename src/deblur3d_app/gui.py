@@ -1,18 +1,13 @@
-# src/deblur3d/app/gui.py
+# src/deblur3d_app/gui.py
+"""Napari front end. All inference logic lives in core.py."""
 from __future__ import annotations
 
-import os
-import json
-import math
-import socket
+import threading
 import time
-from dataclasses import dataclass
-from functools import lru_cache
-from pathlib import Path
-from typing import Tuple, List, Optional, Union
-from packaging.version import Version, InvalidVersion
+from typing import Optional, Tuple
 
 import numpy as np
+
 try:
     import torch  # noqa
 except Exception as e:
@@ -21,63 +16,34 @@ except Exception as e:
         "or CUDA 11.6: `pip install -e .[cu116] --extra-index-url https://download.pytorch.org/whl/cu116`"
     ) from e
 
-import tifffile as tiff
-
 from magicgui import magicgui
 from napari import Viewer, run
 from napari.layers import Image as NapariImage
 from napari.utils.notifications import show_info, show_warning, show_error
-
-from qtpy.QtWidgets import QMessageBox
-from platformdirs import user_data_dir
-from safetensors.torch import load_file as load_safetensors
-from huggingface_hub import HfApi, hf_hub_download
-try:
-    from huggingface_hub.errors import RepositoryNotFoundError, EntryNotFoundError
-except Exception:
-    try:
-        from huggingface_hub import RepositoryNotFoundError, EntryNotFoundError  # type: ignore
-    except Exception:
-        class RepositoryNotFoundError(Exception): ...
-        class EntryNotFoundError(Exception): ...
-
-from . import __version__ as APP_VERSION
-from ._workers import make_infer_worker
-
-# ---- Project imports ----
-from deblur3d.data.io import read_volume_float01
-from deblur3d.infer.tiled import (
-    deblur_volume_tiled,
-    validate_tiling,
-    validate_volume_shape,
+from qtpy.QtCore import QObject, Signal
+from qtpy.QtWidgets import (
+    QLabel, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
-from deblur3d.models import UNet3D_Residual, ControlledUNet3D
+from tqdm import tqdm
 
-# =========================
-# Hugging Face integration
-# =========================
-HF_REPO_ID = os.getenv("DEBLUR3D_HF_REPO", "HippoCanFly/DeepDeBlur3D")
-HF_FILENAME = os.getenv("DEBLUR3D_HF_FILE", "pytorch_model.safetensors")
-HF_REVISION_DEFAULT = os.getenv("DEBLUR3D_HF_REV", "v1.0.0")
+from . import __version__
+from ._workers import make_infer_worker
+from .core import (
+    DEFAULT_PRESET,
+    HF_FILENAME,
+    HF_REPO_ID,
+    TILE_PRESETS,
+    HFModelSpec,
+    InferenceAborted,
+    app_update_available,
+    ensure_model_assets,
+    normalize_float01,
+    provenance,
+    run_inference,
+)
 
-APP_AUTHOR = "DeepDeBlur3D"
-APP_NAME   = "deblur3d-gui"
-STATE_DIR  = Path(user_data_dir(APP_NAME, APP_AUTHOR)); STATE_DIR.mkdir(parents=True, exist_ok=True)
-STATE_PATH = STATE_DIR / "model_state.json"
+GITHUB_URL = "https://github.com/kiataj/deepdeblur3d-app/releases/latest"
 
-@dataclass
-class HFModelSpec:
-    repo_id: str
-    weights_filename: str
-    config_filename: str = "config.json"
-    revision: Optional[str] = None
-
-def _has_internet(timeout: float = 2.0) -> bool:
-    try:
-        socket.create_connection(("huggingface.co", 443), timeout=timeout)
-        return True
-    except OSError:
-        return False
 
 def _ask_yes_no(title: str, text: str) -> bool:
     m = QMessageBox()
@@ -88,409 +54,98 @@ def _ask_yes_no(title: str, text: str) -> bool:
     m.setDefaultButton(QMessageBox.Yes)
     return m.exec_() == QMessageBox.Yes
 
-def _load_state() -> dict:
-    if STATE_PATH.is_file():
-        try:
-            return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
 
-def _save_state(d: dict):
-    try:
-        STATE_PATH.write_text(json.dumps(d, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-def _parse_semver_tag(tag: str) -> Optional[Version]:
-    s = tag[1:] if tag.startswith("v") else tag
-    try:
-        v = Version(s)
-        return v if not v.is_prerelease else None
-    except InvalidVersion:
-        return None
-
-def _get_latest_semver_tag(api: HfApi, repo_id: str) -> Optional[str]:
-    refs = api.list_repo_refs(repo_id)
-    best: tuple[Version, str] | None = None
-    for t in refs.tags:
-        v = _parse_semver_tag(t.name)
-        if v is None:
-            continue
-        if best is None or v > best[0]:
-            best = (v, t.name)
-    return best[1] if best else None
-
-def _get_desired_revision_by_tag(api: HfApi, repo_id: str) -> str:
-    state = _load_state()
-    current = state.get("revision") or HF_REVISION_DEFAULT
-    cur_ver = _parse_semver_tag(current)
-    try:
-        latest = _get_latest_semver_tag(api, repo_id)
-    except Exception:
-        latest = None
-    if latest:
-        lat_ver = _parse_semver_tag(latest)
-        if cur_ver and lat_ver and lat_ver > cur_ver:
-            if _ask_yes_no(
-                "Model update available",
-                f"A newer tagged model ({latest}) is available.\n\n"
-                f"Update from {current} to {latest}?"
-            ):
-                current = latest
-                state["revision"] = current
-                _save_state(state)
-    if state.get("revision") != current:
-        state["revision"] = current
-        _save_state(state)
-    return current
-
-def ensure_model_assets(spec: HFModelSpec) -> Tuple[str, Optional[str]]:
-    api = HfApi()
-    online = _has_internet()
-    if online:
-        desired_rev = _get_desired_revision_by_tag(api, spec.repo_id)
-    else:
-        st = _load_state()
-        desired_rev = st.get("revision") or HF_REVISION_DEFAULT
-
-    def _download_all(force=False):
-        w = hf_hub_download(spec.repo_id, spec.weights_filename, revision=desired_rev, force_download=force)
-        c = None
-        try:
-            c = hf_hub_download(spec.repo_id, spec.config_filename, revision=desired_rev, force_download=force)
-        except EntryNotFoundError:
-            c = None
-        return w, c
-
-    st = _load_state()
-    last_rev = st.get("revision")
-    force = online and (last_rev is not None) and (desired_rev != last_rev)
-
-    weights_path, config_path = _download_all(force=force)
-
-    st.update({
-        "repo_id": spec.repo_id,
-        "weights": spec.weights_filename,
-        "config": spec.config_filename,
-        "revision": desired_rev,
-        "weights_path": weights_path,
-        "config_path": config_path,
-    })
-    _save_state(st)
-
-    if not weights_path or not Path(weights_path).is_file():
-        raise RuntimeError("Weights file could not be resolved/downloaded.")
-    return weights_path, config_path
-
-def _provenance(config_path: Optional[str]) -> dict:
-    """Identify the code and the weights behind a result, for reproducibility."""
-    cfg = {}
-    if config_path and os.path.isfile(config_path):
-        try:
-            cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
-        except Exception:
-            cfg = {}
-    st = _load_state()
-    return {
-        "app_version": APP_VERSION,
-        "model_repo": st.get("repo_id", HF_REPO_ID),
-        "model_revision": st.get("revision", "unknown"),
-        "model_version": cfg.get("model_version", "unknown"),
-        "arch_version": cfg.get("arch_version", "unknown"),
-    }
-
-# ----------------- I/O + normalization -----------------
-def _normalize_float01_like_io(vol: np.ndarray) -> np.ndarray:
-    """
-    Robust mapping to [0,1] that avoids collapsing dynamic range (prevents single-handle slider).
-    """
-    x0 = np.asarray(vol)
-    if x0.ndim == 2:
-        x0 = x0[None, ...]
-    if x0.ndim != 3:
-        raise ValueError(f"Expected 3D or 2D array; got shape {x0.shape}")
-
-    # Always float32 internally
-    x = x0.astype(np.float32, copy=False)
-
-    # Integer input: scale by dtype max
-    if np.issubdtype(x0.dtype, np.integer):
-        maxv = float(np.iinfo(x0.dtype).max)
-        if maxv <= 0:
-            return np.zeros_like(x, dtype=np.float32)
-        x = x / maxv
-        return np.clip(x, 0.0, 1.0)
-
-    # Float input
-    vmin, vmax = float(x.min()), float(x.max())
-    if vmin >= 0.0 and vmax <= 1.5:
-        # Already normalized-ish → only clip
-        return np.clip(x, 0.0, 1.0)
-
-    # Percentile remap with stability guards
-    lo, hi = np.percentile(x, [1.0, 99.9])
-    # If degenerate or NaN, fall back to a non-collapsing span
-    if not np.isfinite(lo) or not np.isfinite(hi) or (hi - lo) < 1e-6:
-        span = max(vmax - vmin, 1.0)  # ensure non-zero
-        lo, hi = vmin, vmin + span
-
-    x = (x - lo) / max(hi - lo, 1e-6)
-    return np.clip(x, 0.0, 1.0)
-
-def _read_dir_tif_stack(dirpath: Path) -> np.ndarray:
-    files: List[Path] = sorted(
-        [p for p in dirpath.iterdir() if p.suffix.lower() in (".tif", ".tiff")],
-        key=lambda p: p.name,
-    )
-    if not files:
-        raise ValueError(f"No .tif/.tiff files found in: {dirpath}")
-    vol = np.stack([tiff.imread(str(p)) for p in files], axis=0)
-    return _normalize_float01_like_io(vol)
-
-def read_volume_auto(path: Path) -> np.ndarray:
-    if path.is_dir():
-        return _read_dir_tif_stack(path)
-    ext = path.suffix.lower()
-    if ext in (".tif", ".tiff"):
-        return read_volume_float01(str(path))
-    if ext == ".npy":
-        arr = np.load(str(path))
-        return _normalize_float01_like_io(arr)
-    raise ValueError(f"Unsupported input: {path}")
-
-# ----------------- Model cache/loader -----------------
-import inspect
-
-@lru_cache(maxsize=2)
-def _cached_model_from_paths(weights_path: str, config_path: Optional[str], device: str):
-    dev = "cuda" if (device == "cuda" and torch.cuda.is_available()) else "cpu"
-    if not config_path or not os.path.isfile(config_path):
-        raise RuntimeError("config.json is missing alongside the weights (expected in HF repo).")
-
-    cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    Model = UNet3D_Residual
-
-    sig = inspect.signature(Model.__init__)
-    params = set(sig.parameters.keys())
-    def m(names, val):
-        for n in names:
-            if n in params:
-                return {n: val}
-        return {}
-    kw = {}
-    kw |= m(["in_ch","in_channels","n_channels","channels","input_channels"], int(cfg.get("in_channels", 1)))
-    out_val = int(cfg.get("out_channels", 1))
-    kw |= m(["out_ch","out_channels","n_classes","classes","num_classes"], out_val)
-    kw |= m(["base_ch","base","features","width","base_filters"], int(cfg.get("base_channels", 16)))
-    kw |= m(["levels","depth","num_levels","n_levels"], int(cfg.get("levels", 4)))
-
-    try:
-        net = Model(**{k: v for k, v in kw.items() if k != "self"})
-    except TypeError:
-        kw2 = {k: v for k, v in kw.items() if k not in {"out_ch","out_channels","n_classes","classes","num_classes"}}
-        try:
-            net = Model(**kw2)
-        except TypeError:
-            net = Model()
-
-    sd = load_safetensors(weights_path, device="cpu")
-    net.load_state_dict(sd, strict=True)
-    net.to(dev).eval()
-    return net, dev
-
-# ----------------- Residual cache -----------------
-# Entries hold two full-volume tensors, so they are kept in host memory and the
-# cache is capped: an unbounded GPU-resident cache pinned VRAM for every volume
-# the user had ever run.
-_RES_CACHE: dict[tuple, dict] = {}
-_RES_CACHE_MAXSIZE = 1
-
-def _fingerprint(arr: np.ndarray) -> tuple:
-    arr = np.asarray(arr)
-    return (arr.shape, str(arr.dtype), int(arr.nbytes), float(arr.mean()), float(arr.std()))
-
-def _cache_key(weights_path: str, revision: str, device: str, vol: np.ndarray) -> tuple:
-    return (weights_path, revision, device, *_fingerprint(vol))
-
-def _cache_store(key: tuple, vol_t: torch.Tensor, r_t: torch.Tensor):
-    while len(_RES_CACHE) >= _RES_CACHE_MAXSIZE:
-        _RES_CACHE.pop(next(iter(_RES_CACHE)))
-    _RES_CACHE[key] = {"vol_t": vol_t, "residual_t": r_t}
-
-def clear_residual_cache():
-    _RES_CACHE.clear()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    show_info("DeepDeBlur3D residual cache cleared.")
-
-# ----------------- Contrast stabilization -----------------
 def _stabilize_contrast(layer: NapariImage, lo: float = 0.0, hi: float = 1.0):
-    """
-    Set both contrast_limits_range and contrast_limits to a sane (lo, hi),
-    ensuring a two-handle slider and avoiding degenerate domains.
-    """
+    """Pin the contrast domain to [0,1] so the slider keeps two usable handles."""
     try:
         layer.contrast_limits_range = (float(lo), float(hi))
     except Exception:
         pass
     layer.contrast_limits = (float(lo), float(hi))
-    # mark prepared
     if getattr(layer, "metadata", None) is not None:
         layer.metadata["deblur3d_prepared"] = True
 
-# ----------------- Direct-mode controlled wrapper -----------------
-class _ParamNetDirect(torch.nn.Module):
-    def __init__(self, base: torch.nn.Module, clamp01: bool,
-                 strength: float, hp_sigma: float, hp_gain: float, lp_gain: float):
+
+class _Relay(QObject):
+    """Marshals worker-thread events onto the Qt main thread."""
+    progressed = Signal(int, int)
+    update_found = Signal(str)
+
+
+class _ProgressPanel(QWidget):
+    def __init__(self):
         super().__init__()
-        self.ctrl = ControlledUNet3D(base, clamp01=clamp01)
-        self.strength = float(strength)
-        self.hp_sigma = float(hp_sigma)
-        self.hp_gain = float(hp_gain)
-        self.lp_gain = float(lp_gain)
+        layout = QVBoxLayout(self)
+        self.label = QLabel("Idle")
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setValue(0)
+        self.abort_button = QPushButton("Abort")
+        self.abort_button.setEnabled(False)
+        layout.addWidget(self.label)
+        layout.addWidget(self.bar)
+        layout.addWidget(self.abort_button)
 
-    @torch.no_grad()
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.ctrl(
-            x,
-            strength=self.strength,
-            hp_sigma=self.hp_sigma,
-            hp_gain=self.hp_gain,
-            lp_gain=self.lp_gain,
-        )
+    def set_progress(self, done: int, total: int):
+        total = max(1, total)
+        self.bar.setRange(0, total)
+        self.bar.setValue(done)
+        self.label.setText(f"Tile {done} / {total}")
 
-# ----------------- Slab-wise control application -----------------
-# Target voxels per slab. Bounds the device working set of the control step so it
-# stays O(slab) instead of O(volume).
-_CTRL_SLAB_VOXELS = 32_000_000
+    def reset(self, message: str = "Idle"):
+        self.bar.setRange(0, 100)
+        self.bar.setValue(0)
+        self.label.setText(message)
 
-@torch.no_grad()
-def _apply_controls_slabwise(
-    ctrl: ControlledUNet3D,
-    vol_t: torch.Tensor,
-    r_t: torch.Tensor,
-    dev: str,
-    *,
-    strength: float,
-    hp_sigma: float,
-    hp_gain: float,
-    lp_gain: float,
-) -> np.ndarray:
-    """Apply the control formula in Z-slabs, moving one slab at a time to `dev`.
 
-    Slabs are read back with a halo matching the Gaussian kernel radius used by
-    gaussian_blur3d, so the result is identical to a whole-volume application.
-    """
-    D, H, W = int(vol_t.shape[2]), int(vol_t.shape[3]), int(vol_t.shape[4])
-    out = np.empty((D, H, W), dtype=np.float32)
-
-    halo = max(1, int(math.ceil(3.0 * hp_sigma))) if hp_sigma and hp_sigma > 0 else 0
-    slab = max(1, min(D, int(_CTRL_SLAB_VOXELS // max(1, H * W))))
-
-    for z0 in range(0, D, slab):
-        z1 = min(D, z0 + slab)
-        a, b = max(0, z0 - halo), min(D, z1 + halo)
-        x = vol_t[:, :, a:b].to(dev, non_blocking=True)
-        r = r_t[:, :, a:b].to(dev, non_blocking=True)
-        y = ctrl.apply_controls(
-            x=x, r=r, strength=strength, hp_sigma=hp_sigma,
-            hp_gain=hp_gain, lp_gain=lp_gain,
-        )
-        out[z0:z1] = y[0, 0, z0 - a: z1 - a].to("cpu").numpy()
-        del x, r, y
-
-    if dev == "cuda":
-        torch.cuda.empty_cache()
-    return out
-
-# ----------------- Inference wrapper (with residual reuse) -----------------
-def run_infer_bound(
-    vol_f32_01: np.ndarray,
-    *,
-    device: str,
-    tile: Tuple[int, int, int],
-    overlap: Tuple[int, int, int],
-    use_amp: bool = False,
-    pad_mode: str = "reflect",
-    clamp01: bool = True,
-    strength: float = 1.0,
-    hp_sigma: float = 0.0,
-    hp_gain: float = 1.0,
-    lp_gain: float = 1.0,
-    weights_path: str,
-    config_path: Optional[str],
-    reuse_cache: bool = True,
-    batch_size: Union[int, str] = "auto",
-) -> np.ndarray:
-    validate_volume_shape(np.asarray(vol_f32_01).shape)
-    base, dev = _cached_model_from_paths(weights_path, config_path, device)
-    vol_f32_01 = _normalize_float01_like_io(np.asarray(vol_f32_01))
-
-    st = _load_state()
-    revision = st.get("revision", "unknown")
-    key = _cache_key(weights_path, revision, dev, vol_f32_01)
-
-    ctrl = ControlledUNet3D(base, clamp01=clamp01).eval()
-
-    # Fast path: reuse cached residual
-    if reuse_cache and key in _RES_CACHE:
-        entry = _RES_CACHE[key]
-        return _apply_controls_slabwise(
-            ctrl, entry["vol_t"], entry["residual_t"], dev,
-            strength=strength, hp_sigma=hp_sigma, hp_gain=hp_gain, lp_gain=lp_gain,
-        )
-
-    # Cache miss → run UNet once (tiled) for base output; apply controls after
-    pred_base = deblur_volume_tiled(
-        net=base,
-        vol=vol_f32_01,
-        tile=tile, overlap=overlap,
-        device=dev, use_amp=use_amp if dev == "cuda" else False,
-        pad_mode=pad_mode, clamp01=clamp01,
-        batch_size=batch_size,
-    )
-
-    D, H, W = pred_base.shape
-    # Kept on the host: two full-volume tensors per entry would otherwise sit in
-    # VRAM for the lifetime of the session.
-    vol_t = torch.from_numpy(vol_f32_01).reshape(1, 1, D, H, W)
-    base_t = torch.from_numpy(pred_base).reshape(1, 1, D, H, W)
-    r_t = base_t - vol_t
-    del base_t
-    _cache_store(key, vol_t, r_t)
-
-    return _apply_controls_slabwise(
-        ctrl, vol_t, r_t, dev,
-        strength=strength, hp_sigma=hp_sigma, hp_gain=hp_gain, lp_gain=lp_gain,
-    )
-
-# ----------------- Napari GUI -----------------
 def build_viewer() -> Viewer:
-    print(f"[DeepDeBlur3D] app {APP_VERSION} | torch {torch.__version__}")
-    v = Viewer(title=f"deblur3d {APP_VERSION} — Inference")
+    print(f"[DeepDeBlur3D] app {__version__} | torch {torch.__version__}")
+    v = Viewer(title=f"deblur3d {__version__} — Inference")
     v.dims.ndisplay = 2
     v.grid.enabled = True
 
     state = {"run_idx": 1}
+    relay = _Relay()
+    panel = _ProgressPanel()
+    abort_event = threading.Event()
 
-    # One-time input prep with stabilized contrast
-    def _prepare_input_layer(layer: NapariImage):
+    relay.progressed.connect(panel.set_progress)
+
+    def _on_update(tag: str):
+        if _ask_yes_no(
+            "Update available",
+            f"DeepDeBlur3D {tag} is available; you are running {__version__}.\n\n"
+            f"Open the release page?",
+        ):
+            import webbrowser
+            webbrowser.open(GITHUB_URL)
+
+    relay.update_found.connect(_on_update)
+
+    def _check_for_update():
+        # Network call, so it must not block startup or crash the app offline.
+        try:
+            tag = app_update_available()
+        except Exception:
+            return
+        if tag:
+            relay.update_found.emit(tag)
+
+    threading.Thread(target=_check_for_update, daemon=True).start()
+
+    def _prepare_input_layer(layer: NapariImage) -> bool:
         if getattr(layer, "metadata", None) and layer.metadata.get("deblur3d_prepared"):
             return True
-
         data = np.asarray(layer.data)
         if data.ndim != 3:
             return False
         try:
-            norm = _normalize_float01_like_io(data)
+            norm = normalize_float01(data)
         except Exception:
             return False
-
         layer.data = norm.astype(np.float32, copy=False)
         layer.colormap = "gray"
-        _stabilize_contrast(layer, 0.0, 1.0)  # critical for two-handle slider
-
+        _stabilize_contrast(layer, 0.0, 1.0)
         v.dims.ndisplay = 2
         v.grid.enabled = True
         return True
@@ -498,10 +153,8 @@ def build_viewer() -> Viewer:
     def _update_run_enabled_from_active():
         active = v.layers.selection.active
         enable = isinstance(active, NapariImage) and getattr(active.data, "ndim", 0) == 3
-        infer_w.enabled = bool(enable)
-        clear_cache_btn.enabled = True
+        infer_w.enabled = bool(enable) and not panel.abort_button.isEnabled()
 
-    # Only treat user inputs; ignore app-generated outputs
     def _on_layer_added(event):
         layer = event.value
         if not isinstance(layer, NapariImage):
@@ -516,46 +169,26 @@ def build_viewer() -> Viewer:
     v.layers.events.inserted.connect(_on_layer_added)
     v.layers.selection.events.active.connect(lambda e: _update_run_enabled_from_active())
 
-    @magicgui(call_button="Clear residual cache")
-    def clear_cache_btn():
-        clear_residual_cache()
-
     @magicgui(
         call_button="Run Filter",
         device={"choices": ["cuda", "cpu"]},
-        tile_x={"label": "Tile X", "min": 16, "max": 512, "step": 16, "value": 256},
-        tile_y={"label": "Tile Y", "min": 16, "max": 512, "step": 16, "value": 256},
-        tile_z={"label": "Tile Z", "min": 16, "max": 128, "step": 8,  "value": 64},
-        ov_x={"label": "Overlap X", "min": 0, "max": 256, "step": 8, "value": 128},
-        ov_y={"label": "Overlap Y", "min": 0, "max": 256, "step": 8, "value": 128},
-        ov_z={"label": "Overlap Z", "min": 0, "max": 64,  "step": 4, "value": 32},
-        use_amp={"label": "Use AMP", "value": False},
-        pad_mode={"choices": ["reflect", "replicate", "constant"], "value": "reflect"},
-        clamp01={"label": "Clamp [0,1]", "value": True},
-        batch_size={
-            "label": "Tiles per pass",
-            "choices": ["auto", "1", "2", "4", "8", "16"],
-            "value": "auto",
-        },
-        strength={"label": "Strength", "min": 0.0, "max": 3.0, "step": 0.1, "value": 1.0},
-        hp_sigma={"label": "HP Sigma (vox)", "min": 0.0, "max": 8.0, "step": 0.1, "value": 0.0},
-        hp_gain={"label": "HP Gain", "min": 0.0, "max": 4.0, "step": 0.1, "value": 1.0},
-        lp_gain={"label": "LP Gain", "min": 0.0, "max": 4.0, "step": 0.1, "value": 1.0},
-        reuse_cache={"label": "Reuse cached residual (fast)", "value": True},
+        preset={"label": "Tiling", "choices": list(TILE_PRESETS)},
+        strength={"label": "Strength", "widget_type": "FloatSlider",
+                  "min": 0.0, "max": 3.0, "step": 0.1},
+        hp_sigma={"label": "HP Sigma (vox)", "widget_type": "FloatSlider",
+                  "min": 0.0, "max": 8.0, "step": 0.1},
+        hp_gain={"label": "HP Gain", "widget_type": "FloatSlider",
+                 "min": 0.0, "max": 4.0, "step": 0.1},
+        lp_gain={"label": "LP Gain", "widget_type": "FloatSlider",
+                 "min": 0.0, "max": 4.0, "step": 0.1},
     )
     def infer_w(
         device: str = "cuda",
-        tile_x: int = 256, tile_y: int = 256, tile_z: int = 64,
-        ov_x: int = 128,  ov_y: int = 128,  ov_z: int = 32,
-        use_amp: bool = False,
-        pad_mode: str = "reflect",
-        clamp01: bool = True,
-        batch_size: str = "auto",
+        preset: str = DEFAULT_PRESET,
         strength: float = 1.0,
         hp_sigma: float = 0.0,
         hp_gain: float = 1.0,
         lp_gain: float = 1.0,
-        reuse_cache: bool = True,
     ):
         def _is_cuda_error(err: Exception) -> bool:
             msg = str(err).lower()
@@ -569,66 +202,72 @@ def build_viewer() -> Viewer:
             )
             return
 
-        vol = _normalize_float01_like_io(np.asarray(active.data))
-        tile = (tile_z, tile_y, tile_x)   # (Z, Y, X)
-        overlap = (ov_z, ov_y, ov_x)
-        try:
-            validate_volume_shape(vol.shape)
-            tile, overlap = validate_tiling(tile, overlap)
-        except ValueError as e:
-            show_error(str(e))
-            return
+        vol = normalize_float01(np.asarray(active.data))
+        tile, overlap = TILE_PRESETS[preset]
 
         try:
-            desired_spec = HFModelSpec(repo_id=HF_REPO_ID, weights_filename=HF_FILENAME, revision=None)
-            weights_path, config_path = ensure_model_assets(desired_spec)
+            weights_path, config_path = ensure_model_assets(
+                HFModelSpec(repo_id=HF_REPO_ID, weights_filename=HF_FILENAME),
+                prompt=_ask_yes_no,
+            )
         except Exception as e:
             show_error(f"Model resolution failed: {e}")
             return
 
         want_cuda = (device == "cuda")
-        cuda_available = (torch.cuda.is_available() if want_cuda else False)
+        cuda_available = torch.cuda.is_available() if want_cuda else False
         first_device = "cuda" if (want_cuda and cuda_available) else "cpu"
         if want_cuda and not cuda_available:
             show_warning("CUDA not available. Falling back to CPU.")
-        print(f"[DeepDeBlur3D] Using device: {first_device}")
 
-        infer_w.enabled = False
         run_id = state["run_idx"]
-        start = None
+        abort_event.clear()
+        infer_w.enabled = False
+        panel.abort_button.setEnabled(True)
+        panel.reset("Starting…")
 
         def _fmt(x: float, nd=2):
             return f"{x:.1f}" if nd == 1 else f"{x:.2f}"
 
         def _launch(device_to_use: str):
-            nonlocal start
             start = time.time()
             show_info(f"Starting inference on '{active.name}' using {device_to_use.upper()} …")
-            print(f"[DeepDeBlur3D] Starting inference on '{active.name}' using {device_to_use}")
+            bar = tqdm(total=1, desc=f"deblur3d #{run_id}", unit="tile")
+
+            def on_progress(done: int, total: int):
+                if bar.total != total:
+                    bar.reset(total=total)
+                bar.n = done
+                bar.refresh()
+                relay.progressed.emit(done, total)
 
             worker = make_infer_worker(
-                lambda v_, device=None, progress=None: run_infer_bound(
+                lambda v_, device=None, progress=None: run_inference(
                     v_,
                     device=device_to_use,
                     tile=tile,
                     overlap=overlap,
-                    use_amp=use_amp if device_to_use == "cuda" else False,
-                    pad_mode=pad_mode,
-                    clamp01=clamp01,
                     strength=strength,
                     hp_sigma=hp_sigma,
                     hp_gain=hp_gain,
                     lp_gain=lp_gain,
                     weights_path=weights_path,
                     config_path=config_path,
-                    reuse_cache=reuse_cache,
-                    batch_size=batch_size if batch_size == "auto" else int(batch_size),
+                    progress=on_progress,
+                    should_abort=abort_event.is_set,
                 ),
-                vol, device=device_to_use, extra_kwargs={}
+                vol, device=device_to_use, extra_kwargs={},
             )
 
+            def _finish():
+                bar.close()
+                panel.abort_button.setEnabled(False)
+                infer_w.enabled = True
+
             def on_return(pred: np.ndarray):
-                dt = time.time() - start if start else 0.0
+                dt = time.time() - start
+                _finish()
+                panel.reset(f"Done in {dt:.1f}s")
                 layer_name = (
                     f"filtered_s{_fmt(strength,1)}_"
                     f"hps{_fmt(hp_sigma,2)}_hpg{_fmt(hp_gain,2)}_lpg{_fmt(lp_gain,2)}_"
@@ -640,38 +279,39 @@ def build_viewer() -> Viewer:
                     metadata={
                         "deblur3d_output": True,
                         "deblur3d": {
-                            **_provenance(config_path),
+                            **provenance(config_path),
                             "device": device_to_use,
+                            "preset": preset,
                             "tile": tile, "overlap": overlap,
-                            "batch_size": batch_size,
                             "strength": strength, "hp_sigma": hp_sigma,
                             "hp_gain": hp_gain, "lp_gain": lp_gain,
                         },
                     },
                 )
-                # Stabilize contrast so the slider behaves correctly.
                 _stabilize_contrast(lyr, 0.0, 1.0)
-
                 lyr.grid_position = (0, 1)
                 if active in v.layers:
                     v.layers.selection.active = active
                 show_info(f"Inference #{run_id} done in {dt:.2f}s on {device_to_use.upper()} | shape={pred.shape}")
-                print(f"[DeepDeBlur3D] Inference #{run_id} done in {dt:.2f}s on {device_to_use}")
                 v.grid.enabled = True
                 state["run_idx"] = run_id + 1
-                infer_w.enabled = True
 
             def on_error(e):
-                msg = str(e)
-                print(f"[DeepDeBlur3D] ERROR on {device_to_use}: {msg}")
+                if isinstance(e, InferenceAborted):
+                    _finish()
+                    panel.reset("Aborted")
+                    show_info("Inference aborted.")
+                    return
+                print(f"[DeepDeBlur3D] ERROR on {device_to_use}: {e}")
                 if device_to_use == "cuda" and _is_cuda_error(e):
+                    bar.close()
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                     show_warning("CUDA run failed. Falling back to CPU automatically…")
-                    print("[DeepDeBlur3D] Falling back to CPU due to CUDA error")
                     _launch("cpu")
                 else:
-                    infer_w.enabled = True
+                    _finish()
+                    panel.reset("Failed")
                     show_error(f"Inference error on {device_to_use}: {e}")
 
             worker.returned.connect(on_return)
@@ -680,15 +320,18 @@ def build_viewer() -> Viewer:
 
         _launch(first_device)
 
-    # Widgets
+    panel.abort_button.clicked.connect(lambda: (abort_event.set(), panel.label.setText("Aborting…")))
+
     infer_w.enabled = False
     v.window.add_dock_widget(infer_w, name="DeepDeBlur3D", area="right")
-    v.window.add_dock_widget(clear_cache_btn, name="Cache", area="right")
+    v.window.add_dock_widget(panel, name="Progress", area="right")
     return v
 
+
 def main():
-    v = build_viewer()
+    build_viewer()
     run()
+
 
 if __name__ == "__main__":
     main()

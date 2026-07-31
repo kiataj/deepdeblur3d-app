@@ -131,6 +131,47 @@ starting a run. Filtered results are added as separate layers, while the source
 layer remains active so parameter changes can reuse its cached residual. To
 process a different volume or a filtered result, select that layer explicitly.
 
+A long run can be stopped with the **Abort** button in the Progress panel, which
+also shows the current tile count.
+
+## Command Line
+
+The same pipeline runs headlessly, with no napari or display required.
+
+```bash
+# One volume
+deblur3d scan.tif deblurred.tif
+
+# A whole folder, with control parameters
+deblur3d scans/ results/ --batch --strength 1.2 --hp-sigma 1.5
+
+# A directory of TIFF slices is read as a single volume
+deblur3d slices/ out.tif
+```
+
+Inputs may be TIFF stacks, `.npy` arrays, or directories of TIFF slices. In
+`--batch` mode, existing outputs are skipped unless `--overwrite` is passed, so
+an interrupted run resumes instead of repeating work.
+
+| Option | Purpose |
+|---|---|
+| `--preset NAME` | Tiling preset; `--list-presets` shows them |
+| `--tile Z Y X`, `--overlap Z Y X` | Override the preset |
+| `--device {auto,cuda,cpu}` | Defaults to CUDA when available |
+| `--strength`, `--hp-sigma`, `--hp-gain`, `--lp-gain` | The control parameters above |
+| `--tiles-per-pass N` | Tiles per forward pass; `auto` sizes it from free VRAM |
+| `--no-amp` | Disable mixed precision (slower; matches pre-2.1 output exactly) |
+| `--dtype {uint16,uint8,float32}` | Output data type |
+
+### Reproducibility
+
+Tile size determines the tiling grid, so changing it changes the result. Presets
+are fixed rather than derived from available VRAM for exactly this reason, and
+the preset, tile, overlap, model revision and app version are recorded on every
+result: in `layer.metadata["deblur3d"]` in the GUI, and printed at startup by the
+CLI. Mixed precision is enabled by default and shifts results by about 6e-4; pass
+`--no-amp` if you need to match runs made before it was turned on.
+
 ## Citation
 
 K. Tajbakhsh, R. Zboray, "DeepDeblur3D: A 3D U-Net for denoising and deblurring micro-CT data," *Tomography of Materials and Structures*, vol. 11, p. 100088, 2026. https://doi.org/10.1016/j.tmater.2026.100088

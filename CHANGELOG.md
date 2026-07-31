@@ -7,6 +7,29 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+**Command line interface.** `deblur3d IN OUT` runs a single volume headlessly;
+`deblur3d IN_DIR OUT_DIR --batch` processes a folder. Inputs may be TIFF stacks,
+`.npy` arrays, or directories of TIFF slices. Existing outputs are skipped unless
+`--overwrite` is given, so an interrupted batch resumes rather than redoing work.
+`--list-presets` prints the tiling options. Batch runs never prompt for a model
+upgrade, so a study cannot silently change model revisions halfway through.
+
+This required splitting the non-GUI logic out of `gui.py` into `core.py`, which
+imports neither napari nor Qt. Verified bit-for-bit identical to the previous
+implementation on a full inference run.
+
+**Progress reporting and an abort button.** `deblur_volume_tiled` accepts
+`progress(done, total)` and `should_abort()` callbacks. The GUI gains a progress
+panel showing the tile count with an Abort button; the CLI shows a tqdm bar, plus
+an outer bar over volumes in batch mode. Aborting raises `InferenceAborted`,
+which deliberately does not subclass `RuntimeError` so the tile loop's OOM retry
+can never mistake it for an out-of-memory condition.
+
+**Update notification for the app.** On startup, when online, the newest GitHub
+release is compared against the running version and offers to open the release
+page. This mirrors the existing prompt for new model revisions. The check runs on
+a background thread and fails silently offline.
+
 **Automatic batch sizing.** Tiles were processed one per forward pass, which
 underutilizes the GPU now that memory is bounded by the tile rather than the
 volume. `deblur_volume_tiled` takes a `batch_size` argument, defaulting to
@@ -38,6 +61,50 @@ different kernel per batch size; `cudnn.deterministic = True` does not remove
 this. Set "Tiles per pass" to 1 for bit-reproducible output.
 
 The chosen batch size is recorded in `layer.metadata["deblur3d"]`.
+
+### Changed
+
+**Mixed precision is on by default, worth 1.87x.** `use_amp` defaulted to False
+behind the comment "PT1.12 + InstanceNorm: keep False unless you use GroupNorm".
+The model is GroupNorm throughout, so the condition the comment names as safe was
+the one that actually held, and the default had been leaving most of the GPU's
+throughput unused. `use_amp="auto"` now enables autocast whenever the device is
+CUDA and the model contains no InstanceNorm, checked rather than assumed, since
+the architecture is read from `config.json` and could change.
+
+Measured 1.87x at a 32x64x64 tile and 1.74x at 32x128x128, end to end. Numerical
+cost is about 6.5e-4, roughly 42 levels of a 16-bit range: larger than batching's
+1e-5, far smaller than the 2e-1 that changing tile size costs. Pass `--no-amp`
+(CLI) for bit-reproducibility against pre-2.1 runs.
+
+`cudnn.benchmark` was evaluated at the same time and does nothing here, since
+tile shapes are fixed and cuDNN's heuristics already pick the same kernels.
+
+**The GUI is down from 16 controls to 6.** What remains is the documented
+interface: device, tiling preset, and the four control parameters. Removed:
+`clamp01` (the model already clamps internally, and unchecking it broke the
+contrast slider's [0,1] assumption), `pad_mode` (edge-tile detail nobody tunes),
+`use_amp` (now automatic), `reuse_cache` (the cache key already covers weights,
+revision, device and volume fingerprint, so reuse is always correct), and the
+"Clear residual cache" button (needed only when the cache was unbounded and
+GPU-resident; it is now capped at one host-side entry). The six tile and overlap
+spin boxes collapse into named presets, of which "Balanced (default)" reproduces
+the previous defaults exactly. The active preset is recorded in provenance.
+
+**The volume is normalized once instead of twice.** `normalize_float01` now
+returns already-normalized float32 input untouched instead of paying a full
+`np.clip` copy, so the GUI's display normalization and the inference path no
+longer duplicate a full-volume allocation.
+
+### Performance notes
+
+Profiling the tile loop with AMP enabled, on a 64x256x256 volume at a 32x64x64
+tile: model forward 83.5%, host-to-device 4.4%, device-to-host 3.2%, host
+accumulation 6.9%, final divide 1.8%. Pinned host memory and overlapping
+transfer with compute were considered and dropped: transfer is 7.6% of runtime,
+so the ceiling is not worth the complexity. An earlier note in this file inferred
+that transfer dominated for large tiles; that was wrong. Large tiles gain less
+from batching because they already saturate the GPU, not because of transfer.
 
 ### Not doing
 
