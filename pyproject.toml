@@ -35,6 +35,7 @@ cu116 = [
 
 [project.scripts]
 deblur3d-gui = "deblur3d_app.gui:main"
+deblur3d = "deblur3d_app.cli:main"
 
 [tool.setuptools_scm]
 # Version is derived from git tags; never edit it by hand. Tagged commits get the
