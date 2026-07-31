@@ -21,7 +21,7 @@ from magicgui import magicgui
 from napari import Viewer, run
 from napari.layers import Image as NapariImage
 from napari.utils.notifications import show_info, show_warning, show_error
-from qtpy.QtCore import QObject, Signal
+from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtWidgets import (
     QAbstractSpinBox, QDoubleSpinBox, QLabel, QMessageBox, QProgressBar,
     QPushButton, QVBoxLayout, QWidget,
@@ -35,6 +35,7 @@ from .core import (
     HF_FILENAME,
     HF_REPO_ID,
     TILE_PRESETS,
+    TILE_PRESET_HELP,
     HFModelSpec,
     InferenceAborted,
     app_update_available,
@@ -108,6 +109,58 @@ def _make_readouts_editable(widget):
             box.setButtonSymbols(QAbstractSpinBox.UpDownArrows)
             box.setStyleSheet(_READOUT_STYLE)
             box.setToolTip("Type an exact value, or drag the slider.")
+
+
+_INFO_BADGE_STYLE = """
+QLabel {
+    border: 1px solid palette(mid);
+    border-radius: 8px;
+    min-width: 14px; max-width: 14px;
+    min-height: 14px; max-height: 14px;
+    font-weight: bold;
+    font-size: 10px;
+    color: palette(mid);
+}
+"""
+
+
+def _preset_tooltip() -> str:
+    rows = []
+    for name, body in TILE_PRESET_HELP.items():
+        lines = "<br>".join(body.splitlines())
+        rows.append(f"<p style='margin:0 0 8px 0'><b>{name}</b><br>{lines}</p>")
+    return (
+        "<div style='max-width:460px'>"
+        "<p style='margin:0 0 8px 0'>Tile size sets how the volume is cut up for "
+        "the network. It changes both memory use and the result, so it is a fixed "
+        "choice rather than something derived from your GPU.</p>"
+        + "".join(rows)
+        + "</div>"
+    )
+
+
+def _add_preset_info(widget) -> bool:
+    """Put an 'i' badge beside the Tiling row and describe each preset on hover."""
+    tooltip = _preset_tooltip()
+    try:
+        combo = widget.preset
+        for index, name in enumerate(TILE_PRESET_HELP):
+            combo.native.setItemData(index, TILE_PRESET_HELP[name], Qt.ToolTipRole)
+        combo.native.setToolTip(tooltip)
+
+        row = combo._labeled_widget()
+        layout = row.native.layout()
+    except Exception:
+        # Private magicgui layout API; a badge is not worth breaking startup over.
+        return False
+
+    badge = QLabel("i")
+    badge.setAlignment(Qt.AlignCenter)
+    badge.setStyleSheet(_INFO_BADGE_STYLE)
+    badge.setToolTip(tooltip)
+    badge.setCursor(Qt.WhatsThisCursor)
+    layout.addWidget(badge)
+    return True
 
 
 def _stabilize_contrast(layer: NapariImage, lo: float = 0.0, hi: float = 1.0):
@@ -403,6 +456,7 @@ def build_viewer() -> Viewer:
     heading.native.setStyleSheet("font-weight: bold; margin-top: 6px;")
     infer_w.insert(infer_w.index("strength"), heading)
     _make_readouts_editable(infer_w)
+    _add_preset_info(infer_w)
 
     infer_w.enabled = False
     v.window.add_dock_widget(infer_w, name="DeepDeBlur3D", area="right")

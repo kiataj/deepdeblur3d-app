@@ -58,7 +58,25 @@ a preset chosen to fit in limited VRAM.
 All three presets now sit in a 3.9-4.8% band, measured against the median slice
 of a volume cropped from the interior of a larger block.
 
+**The residual cache ignored the tiling settings.** Running one preset, then
+switching to another, silently reused the residual computed with the previous
+tiling grid: the key was only (weights, revision, device, volume fingerprint).
+Reported from the GUI after switching from "Low memory" to "Fast". The two
+presets differ by 2.0e-2 on the same volume, so the stale result was visibly
+wrong, and the preset recorded in provenance did not match the pixels.
+
+The key now covers everything that changes the network's output: tile, overlap,
+pad mode, clamping, AMP, batch size and border margin. The control parameters
+are still excluded, since reusing one residual across control sweeps is the
+whole point of the cache. This predates the preset dropdown, which only made it
+easy to trigger; changing the tile spin boxes by hand hit the same bug.
+
 ### Added
+
+**An info badge beside the Tiling control.** Hovering the "i" explains what tile
+size does and describes each preset with its measured VRAM, speed and blending
+quality, so the choice is not guesswork. Each dropdown entry carries its own
+tooltip too.
 
 **Command line interface.** `deblur3d IN OUT` runs a single volume headlessly;
 `deblur3d IN_DIR OUT_DIR --batch` processes a folder. Inputs may be TIFF stacks,

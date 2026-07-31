@@ -70,6 +70,31 @@ TILE_PRESETS: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
 }
 DEFAULT_PRESET = "Balanced (default)"
 
+# Per-tile VRAM is ~708 bytes/voxel for this model. Times and blending quality
+# are measured on a 200x288x288 volume, RTX 3060 Ti; quality is the worst
+# slice-to-slice deviation from the volume median, so lower is smoother.
+TILE_PRESET_HELP: dict[str, str] = {
+    "Balanced (default)": (
+        "Tile 64x256x256, overlap 32x128x128, about 3.0 GB of VRAM per tile.\n"
+        "Smoothest blending (3.9%) and the slowest (7.6 s), because the wide "
+        "overlap makes the model revisit each voxel several times.\n"
+        "The only preset that reproduces output from before v2.1.\n"
+        "Use for final and published results, and to match earlier runs."
+    ),
+    "Low memory": (
+        "Tile 32x128x128, overlap 16x32x32, about 0.4 GB of VRAM per tile.\n"
+        "Eight times less VRAM, and the quickest here (2.5 s) because it "
+        "recomputes far less overlapping volume. Blending is slightly looser (4.8%).\n"
+        "Use on GPUs with limited memory, or for very large volumes."
+    ),
+    "Fast (less overlap)": (
+        "Tile 64x256x256, overlap 16x64x64, about 3.0 GB of VRAM per tile.\n"
+        "The same large tiles as Balanced, so the same VRAM, but less redundant "
+        "overlap: 3.2 s at 4.2%.\n"
+        "Use when you want Balanced's large tiles without paying for its overlap."
+    ),
+}
+
 Prompt = Callable[[str, str], bool]
 
 
@@ -361,8 +386,17 @@ def _fingerprint(arr: np.ndarray) -> tuple:
     return (arr.shape, str(arr.dtype), int(arr.nbytes), float(arr.mean()), float(arr.std()))
 
 
-def _cache_key(weights_path: str, revision: str, device: str, vol: np.ndarray) -> tuple:
-    return (weights_path, revision, device, *_fingerprint(vol))
+def _cache_key(weights_path: str, revision: str, device: str, vol: np.ndarray,
+               **inference: object) -> tuple:
+    """Identify a cached residual.
+
+    Everything that changes the network's output belongs here. The control
+    parameters deliberately do not: reusing one residual across control sweeps
+    is the entire point of the cache. Tiling was missing, so switching preset
+    silently reused the residual computed with the previous tiling grid.
+    """
+    settings = tuple(sorted((k, repr(v)) for k, v in inference.items()))
+    return (weights_path, revision, device, settings, *_fingerprint(vol))
 
 
 def _cache_store(key: tuple, vol_t: torch.Tensor, r_t: torch.Tensor):
@@ -454,7 +488,12 @@ def run_inference(
     vol_f32_01 = normalize_float01(np.asarray(vol_f32_01))
 
     revision = load_state().get("revision", "unknown")
-    key = _cache_key(weights_path, revision, dev, vol_f32_01)
+    key = _cache_key(
+        weights_path, revision, dev, vol_f32_01,
+        tile=tuple(tile), overlap=tuple(overlap), pad_mode=pad_mode,
+        clamp01=clamp01, use_amp=use_amp, batch_size=batch_size,
+        border_margin=border_margin,
+    )
     ctrl = ControlledUNet3D(base, clamp01=clamp01).eval()
 
     if reuse_cache and key in _RES_CACHE:
