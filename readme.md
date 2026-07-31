@@ -4,7 +4,7 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-1.12.1-orange)](https://pytorch.org/)
 [![CUDA](https://img.shields.io/badge/CUDA-11.6%2B-lightgrey)](https://developer.nvidia.com/cuda-toolkit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-HippoCanFly%2FDeepDeBlur3D-ffd21e?logo=huggingface&logoColor=000)](https://huggingface.co/HippoCanFly/DeepDeBlur3D)
+[![Hugging Face](<https://img.shields.io/badge/Hugging%20Face-HippoCanFly%2FDeepDeBlur3D-ffd21e?logo=huggingface&logoColor=000>)](https://huggingface.co/HippoCanFly/DeepDeBlur3D)
 
 Napari-based GUI for DeepDeblur3D, a 3D U-Net for simultaneous denoising and deblurring of micro-CT volumes. It outperforms classical post-processing methods in sharpness, contrast-to-noise ratio, and perceptual similarity, and enables more reliable downstream quantitative analysis.
 
@@ -24,12 +24,12 @@ y = clamp(x + C · (c_lp · r_lp + c_hp · r_hp), 0, 1)
 
 where `r_lp` is the low-frequency component of the residual (obtained by 3D Gaussian blur with standard deviation σ) and `r_hp = residual − r_lp` is the high-frequency remainder.
 
-| Parameter | Effect |
-|-----------|--------|
-| `C` | Global correction strength. Higher values apply more overall sharpening and denoising. |
-| `σ` | Controls the frequency split. Larger values push more content into the low-frequency component. Set to 0 to skip the split and apply the full residual uniformly. |
-| `c_lp` | Scales the low-frequency residual. Boosts large-scale contrast and intensity transitions with minimal noise impact. |
-| `c_hp` | Scales the high-frequency residual. Increases fine detail and edge sharpness; the high-frequency component also carries most of the noise correction. |
+| Parameter | Effect                                                                                                                                                            |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `C`     | Global correction strength. Higher values apply more overall sharpening and denoising.                                                                            |
+| `σ`    | Controls the frequency split. Larger values push more content into the low-frequency component. Set to 0 to skip the split and apply the full residual uniformly. |
+| `c_lp`  | Scales the low-frequency residual. Boosts large-scale contrast and intensity transitions with minimal noise impact.                                               |
+| `c_hp`  | Scales the high-frequency residual. Increases fine detail and edge sharpness; the high-frequency component also carries most of the noise correction.             |
 
 ## Examples
 
@@ -72,6 +72,7 @@ where `r_lp` is the low-frequency component of the residual (obtained by 3D Gaus
 ## Quick Start
 
 ### 1. Clone the repository
+
 ```bash
 git clone https://github.com/kiataj/deepdeblur3d-app.git
 cd deepdeblur3d-app
@@ -80,6 +81,7 @@ cd deepdeblur3d-app
 ### 2. Create a virtual environment
 
 **Windows (PowerShell)**
+
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
@@ -87,6 +89,7 @@ python -m pip install --upgrade pip
 ```
 
 **macOS / Linux**
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -94,12 +97,14 @@ python -m pip install --upgrade pip
 ```
 
 **Conda**
+
 ```bash
 conda create -n deblur3d python=3.10 -y
 conda activate deblur3d
 ```
 
 ### 3. Install the package
+
 ```bash
 pip install -e .
 ```
@@ -107,11 +112,13 @@ pip install -e .
 ### 4. Choose a PyTorch backend
 
 **CPU only**
+
 ```bash
 pip install -e .[cpu]
 ```
 
 **GPU with CUDA 11.6**
+
 ```bash
 pip install -e .[cu116] --extra-index-url https://download.pytorch.org/whl/cu116
 ```
@@ -119,6 +126,7 @@ pip install -e .[cu116] --extra-index-url https://download.pytorch.org/whl/cu116
 Update your NVIDIA driver before installing the CUDA wheels if needed.
 
 ### 5. Launch the GUI
+
 ```bash
 deblur3d-gui
 ```
@@ -153,15 +161,15 @@ Inputs may be TIFF stacks, `.npy` arrays, or directories of TIFF slices. In
 `--batch` mode, existing outputs are skipped unless `--overwrite` is passed, so
 an interrupted run resumes instead of repeating work.
 
-| Option | Purpose |
-|---|---|
-| `--preset NAME` | Tiling preset; `--list-presets` shows them |
-| `--tile Z Y X`, `--overlap Z Y X` | Override the preset |
-| `--device {auto,cuda,cpu}` | Defaults to CUDA when available |
-| `--strength`, `--hp-sigma`, `--hp-gain`, `--lp-gain` | The control parameters above |
-| `--tiles-per-pass N` | Tiles per forward pass; `auto` sizes it from free VRAM |
-| `--no-amp` | Disable mixed precision (slower; matches pre-2.1 output exactly) |
-| `--dtype {uint16,uint8,float32}` | Output data type |
+| Option                                                       | Purpose                                                          |
+| ------------------------------------------------------------ | ---------------------------------------------------------------- |
+| `--preset NAME`                                            | Tiling preset;`--list-presets` shows them                      |
+| `--tile Z Y X`, `--overlap Z Y X`                        | Override the preset                                              |
+| `--device {auto,cuda,cpu}`                                 | Defaults to CUDA when available                                  |
+| `--strength`, `--hp-sigma`, `--hp-gain`, `--lp-gain` | The control parameters above                                     |
+| `--tiles-per-pass N`                                       | Tiles per forward pass;`auto` sizes it from free VRAM          |
+| `--no-amp`                                                 | Disable mixed precision (slower; matches pre-3.0 output exactly) |
+| `--dtype {uint16,uint8,float32}`                           | Output data type                                                 |
 
 ### Reproducibility
 
@@ -169,8 +177,7 @@ Tile size determines the tiling grid, so changing it changes the result. Presets
 are fixed rather than derived from available VRAM for exactly this reason, and
 the preset, tile, overlap, model revision and app version are recorded on every
 result: in `layer.metadata["deblur3d"]` in the GUI, and printed at startup by the
-CLI. Mixed precision is enabled by default and shifts results by about 6e-4; pass
-`--no-amp` if you need to match runs made before it was turned on.
+CLI. 
 
 ## Citation
 

@@ -99,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Disable mixed precision (slower, bit-reproducible against older runs).")
     g.add_argument("--legacy-borders", action="store_true",
                    help="Do not extend the tile grid past the volume edge. Restores the "
-                        "pre-2.1 behaviour where the outermost slice of each axis was an "
+                        "pre-3.0 behaviour where the outermost slice of each axis was an "
                         "unblended tile-edge prediction.")
 
     c = p.add_argument_group("controls")

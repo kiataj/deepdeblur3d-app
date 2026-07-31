@@ -280,7 +280,7 @@ def deblur_volume_tiled(
         border_margin: how far to extend the tile grid past each end of the
             volume so its outermost voxels are not produced from a tile's own
             edge. "auto" derives it from the model depth and the overlap; 0
-            restores the pre-2.1 behaviour, where the first and last slice of
+            restores the pre-3.0 behaviour, where the first and last slice of
             each axis were unblended tile-edge predictions.
         progress: called as progress(tiles_done, tiles_total) after each batch.
         should_abort: polled before each batch; if it returns True the run stops

@@ -3,7 +3,14 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## v3.0.0 (2026-07-31)
+
+A major version because default output changes in three ways: mixed precision is
+on (about 6e-4), the volume border is no longer an unblended tile-edge
+prediction, and the "Low memory" preset's Z overlap was doubled. Pass `--no-amp`
+and `--legacy-borders`, and use the "Balanced (default)" preset, to reproduce
+pre-3.0 results.
+
 
 ### Fixed
 
@@ -160,7 +167,7 @@ the architecture is read from `config.json` and could change.
 Measured 1.87x at a 32x64x64 tile and 1.74x at 32x128x128, end to end. Numerical
 cost is about 6.5e-4, roughly 42 levels of a 16-bit range: larger than batching's
 1e-5, far smaller than the 2e-1 that changing tile size costs. Pass `--no-amp`
-(CLI) for bit-reproducibility against pre-2.1 runs.
+(CLI) for bit-reproducibility against pre-3.0 runs.
 
 `cudnn.benchmark` was evaluated at the same time and does nothing here, since
 tile shapes are fixed and cuDNN's heuristics already pick the same kernels.

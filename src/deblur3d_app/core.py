@@ -79,7 +79,7 @@ TILE_PRESET_HELP: dict[str, str] = {
         "Tile 64x256x256, overlap 32x128x128, about 3.0 GB of VRAM per tile.\n"
         "The widest overlap, giving the smoothest blending, and the slowest, "
         "since the model revisits each voxel several times.\n"
-        "The only preset that reproduces output from before v2.1.\n"
+        "The only preset that reproduces output from before v3.0.\n"
         "Use for final and published results, and to match earlier runs."
     ),
     "Low memory": (

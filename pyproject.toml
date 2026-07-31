@@ -8,7 +8,11 @@ dynamic = ["version"]
 description = "Napari GUI for DeepDeBlur3D with Hugging Face model auto-download"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Kiarash Tajbakhsh" }]
+authors = [
+  { name = "Kiarash Tajbakhsh" },
+  { name = "Robert Zboray" },
+]
+license = { file = "LICENSE" }
 
 dependencies = [
   "numpy<2",

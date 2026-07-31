@@ -370,22 +370,30 @@ def build_viewer() -> Viewer:
                 bar.refresh()
                 relay.progressed.emit(done, total)
 
+            def _infer(v_, device=None, progress=None):
+                # Aborting is a normal user action, so it returns None rather
+                # than raising. An exception escaping the worker makes superqt
+                # print a full traceback, which reads like a crash.
+                try:
+                    return run_inference(
+                        v_,
+                        device=device_to_use,
+                        tile=tile,
+                        overlap=overlap,
+                        strength=strength,
+                        hp_sigma=hp_sigma,
+                        hp_gain=hp_gain,
+                        lp_gain=lp_gain,
+                        weights_path=weights_path,
+                        config_path=config_path,
+                        progress=on_progress,
+                        should_abort=abort_event.is_set,
+                    )
+                except InferenceAborted:
+                    return None
+
             worker = make_infer_worker(
-                lambda v_, device=None, progress=None: run_inference(
-                    v_,
-                    device=device_to_use,
-                    tile=tile,
-                    overlap=overlap,
-                    strength=strength,
-                    hp_sigma=hp_sigma,
-                    hp_gain=hp_gain,
-                    lp_gain=lp_gain,
-                    weights_path=weights_path,
-                    config_path=config_path,
-                    progress=on_progress,
-                    should_abort=abort_event.is_set,
-                ),
-                vol, device=device_to_use, extra_kwargs={},
+                _infer, vol, device=device_to_use, extra_kwargs={},
             )
 
             def _finish():
@@ -393,9 +401,13 @@ def build_viewer() -> Viewer:
                 panel.abort_button.setEnabled(False)
                 infer_w.enabled = True
 
-            def on_return(pred: np.ndarray):
+            def on_return(pred: Optional[np.ndarray]):
                 dt = time.time() - start
                 _finish()
+                if pred is None:
+                    panel.reset("Aborted")
+                    show_info("Inference aborted.")
+                    return
                 panel.reset(f"Done in {dt:.1f}s")
                 layer_name = (
                     f"filtered_s{_fmt(strength,1)}_"
@@ -426,11 +438,6 @@ def build_viewer() -> Viewer:
                 state["run_idx"] = run_id + 1
 
             def on_error(e):
-                if isinstance(e, InferenceAborted):
-                    _finish()
-                    panel.reset("Aborted")
-                    show_info("Inference aborted.")
-                    return
                 print(f"[DeepDeBlur3D] ERROR on {device_to_use}: {e}")
                 if device_to_use == "cuda" and _is_cuda_error(e):
                     bar.close()
