@@ -269,50 +269,124 @@ def deblur_volume_tiled(
     else:
         amp_enabled = bool(use_amp) and device_t.type == "cuda"
 
-    def _run(chunk):
-        patches = []
-        for z, y, x in chunk:
-            p = v[:, :, z:z+td, y:y+th, x:x+tw].to(device_t, non_blocking=True)
+    # Two-stage pipeline. Pageable host memory forces every copy to synchronize,
+    # and a per-tile copy back costs one sync per tile, so the GPU sat idle
+    # between batches (measured 74-100% SM, mean ~90%). Staging through pinned
+    # buffers lets the copies run async on their own stream, and double buffering
+    # overlaps host packing and accumulation with the previous batch's compute.
+    use_cuda = device_t.type == "cuda"
+    copy_stream = torch.cuda.Stream() if use_cuda else None
+
+    def _alloc(n: int):
+        return torch.empty((n, 1, td, th, tw), dtype=torch.float32, pin_memory=use_cuda)
+
+    def _pack(stage: torch.Tensor, chunk) -> torch.Tensor:
+        """Pack tiles into one contiguous host batch, padding edge tiles.
+
+        Padding on the host is bit-identical to padding on the device and keeps
+        the transfer a single contiguous copy.
+        """
+        for j, (z, y, x) in enumerate(chunk):
+            p = v[:, :, z:z+td, y:y+th, x:x+tw]
             if p.shape[2:] != (td, th, tw):
-                padz = td - p.shape[2]
-                pady = th - p.shape[3]
-                padx = tw - p.shape[4]
-                p = F.pad(p, (0, padx, 0, pady, 0, padz), mode=pad_mode)
-            patches.append(p)
+                p = F.pad(
+                    p,
+                    (0, tw - p.shape[4], 0, th - p.shape[3], 0, td - p.shape[2]),
+                    mode=pad_mode,
+                )
+            stage[j:j+1].copy_(p)
+        return stage[:len(chunk)]
 
-        with autocast(enabled=amp_enabled):
-            preds = net(torch.cat(patches, dim=0) if len(patches) > 1 else patches[0])
-        # Autocast returns half; blending and accumulation stay in float32.
-        preds = preds.float()
-
-        # Accumulate in coordinate order, matching the single-tile path exactly.
+    def _accumulate(chunk, host_out: torch.Tensor):
+        """Blend a completed batch, in coordinate order, matching batch=1."""
         for j, (z, y, x) in enumerate(chunk):
             pd = min(td, D - z); ph = min(th, H - y); pw = min(tw, W - x)
-            weighted = (preds[j:j+1, :, :pd, :ph, :pw] * w3[:, :, :pd, :ph, :pw]).to("cpu")
-            out[:, :, z:z+pd, y:y+ph, x:x+pw] += weighted
+            out[:, :, z:z+pd, y:y+ph, x:x+pw] += host_out[j:j+1, :, :pd, :ph, :pw]
             wei[:, :, z:z+pd, y:y+ph, x:x+pw] += w3_cpu[:, :, :pd, :ph, :pw]
+
+    def _submit(stage: torch.Tensor, sink: torch.Tensor, chunk):
+        """Run one batch, leaving the copy back in flight."""
+        host_in = _pack(stage, chunk)
+        if use_cuda:
+            with torch.cuda.stream(copy_stream):
+                gpu_in = host_in.to(device_t, non_blocking=True)
+            compute = torch.cuda.current_stream()
+            compute.wait_stream(copy_stream)
+            # Allocated on copy_stream but consumed on the compute stream; without
+            # this the allocator may hand the block out again before the forward
+            # has read it.
+            gpu_in.record_stream(compute)
+        else:
+            gpu_in = host_in
+
+        with autocast(enabled=amp_enabled):
+            preds = net(gpu_in)
+        # Autocast returns half; blending and accumulation stay in float32.
+        weighted = preds.float() * w3
+
+        sink[:len(chunk)].copy_(weighted, non_blocking=use_cuda)
+        if not use_cuda:
+            return None
+        event = torch.cuda.Event()
+        event.record()
+        return event
 
     total = len(coords)
     if progress is not None:
         progress(0, total)
 
+    stages = [_alloc(bs), _alloc(bs)]
+    sinks = [_alloc(bs), _alloc(bs)]
+    events: list = [None, None]
+    pending: list = [None, None]
+    slot = 0
+    done = 0
+
+    def _retire(s: int) -> int:
+        """Wait for slot `s`'s copy back, then blend it. Returns tiles retired."""
+        if pending[s] is None:
+            return 0
+        if events[s] is not None:
+            events[s].synchronize()
+        chunk = pending[s]
+        _accumulate(chunk, sinks[s])
+        pending[s] = None
+        events[s] = None
+        return len(chunk)
+
     i = 0
     while i < total:
         if should_abort is not None and should_abort():
-            raise InferenceAborted(f"Inference aborted after {i} of {total} tiles.")
+            raise InferenceAborted(f"Inference aborted after {done} of {total} tiles.")
         chunk = coords[i:i + bs]
         try:
-            _run(chunk)
+            events[slot] = _submit(stages[slot], sinks[slot], chunk)
         except RuntimeError as e:
             # The budget is an estimate; back off rather than failing the run.
             if bs > 1 and "out of memory" in str(e).lower():
+                done += _retire(1 - slot)
+                pending[slot] = None
+                events[slot] = None
                 bs = max(1, bs // 2)
                 torch.cuda.empty_cache()
+                stages = [_alloc(bs), _alloc(bs)]
+                sinks = [_alloc(bs), _alloc(bs)]
+                slot = 0
                 continue
             raise
+        pending[slot] = chunk
         i += len(chunk)
+
+        # Blend the previous batch while this one is still on the GPU.
+        done += _retire(1 - slot)
         if progress is not None:
-            progress(i, total)
+            progress(done, total)
+        slot = 1 - slot
+
+    for s in (1 - slot, slot):
+        done += _retire(s)
+    if progress is not None:
+        progress(done, total)
 
     if device_t.type == "cuda":
         torch.cuda.empty_cache()
