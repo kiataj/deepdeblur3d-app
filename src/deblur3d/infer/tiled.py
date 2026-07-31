@@ -1,12 +1,40 @@
 # src/deblur3d/infer/tiled.py
-from typing import Tuple, Union
+from typing import Callable, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-__all__ = ["deblur_volume_tiled", "validate_tiling", "validate_volume_shape"]
+__all__ = [
+    "deblur_volume_tiled",
+    "validate_tiling",
+    "validate_volume_shape",
+    "InferenceAborted",
+    "amp_is_safe",
+]
 
 MIN_VOLUME_SIZE = 16
+
+
+class InferenceAborted(Exception):
+    """Raised when a caller's abort callback asks inference to stop.
+
+    Deliberately not a RuntimeError: the tile loop retries RuntimeErrors that
+    look like OOM, and an abort must never be mistaken for one.
+    """
+
+
+def amp_is_safe(net: torch.nn.Module) -> bool:
+    """Whether autocast can be enabled for this model.
+
+    Half precision is unreliable for InstanceNorm on PyTorch 1.12, which is why
+    AMP used to be off by default. This model is GroupNorm throughout, so the
+    exception does not apply; check rather than assume, since the checkpoint's
+    architecture is read from config.json and could change.
+    """
+    return not any(
+        isinstance(m, (torch.nn.InstanceNorm1d, torch.nn.InstanceNorm2d, torch.nn.InstanceNorm3d))
+        for m in net.modules()
+    )
 
 
 def validate_volume_shape(shape, minimum_size: int = MIN_VOLUME_SIZE) -> tuple[int, int, int]:
@@ -147,10 +175,12 @@ def deblur_volume_tiled(
     tile: Tuple[int, int, int] = (96, 128, 128),
     overlap: Tuple[int, int, int] = (24, 32, 32),
     device: str = "cuda",
-    use_amp: bool = False,              # PT1.12 + InstanceNorm: keep False unless you use GroupNorm
+    use_amp: Union[bool, str] = "auto",
     pad_mode: str = "reflect",
     clamp01: bool = True,
     batch_size: Union[int, str] = "auto",
+    progress: Optional[Callable[[int, int], None]] = None,
+    should_abort: Optional[Callable[[], bool]] = None,
 ) -> np.ndarray:
     """
     Tiled 3D inference with Hann blending.
@@ -161,13 +191,18 @@ def deblur_volume_tiled(
         tile:  (Dz, Dy, Dx) tile size.
         overlap: (Oz, Oy, Ox) overlap for blending.
         device: "cuda" or "cpu".
-        use_amp: enable CUDA autocast (set False for InstanceNorm on PT1.12).
+        use_amp: enable CUDA autocast. "auto" turns it on whenever the device is
+            CUDA and the model has no InstanceNorm. Roughly 1.8x faster, at a
+            numerical cost around 6e-4.
         pad_mode: pad mode for edge tiles ("reflect" | "replicate" | "constant").
         clamp01: clamp output to [0,1] before returning.
         batch_size: tiles per forward pass. "auto" sizes it from free VRAM; an
             int forces a value. Batching does not change the tiling grid, so it
             leaves blending untouched, but cuDNN may select a different kernel
             per batch size, which perturbs results at ~1e-5.
+        progress: called as progress(tiles_done, tiles_total) after each batch.
+        should_abort: polled before each batch; if it returns True the run stops
+            and raises InferenceAborted.
 
     Returns:
         (D,H,W) float32 numpy array.
@@ -227,6 +262,13 @@ def deblur_volume_tiled(
     else:
         bs = max(1, int(batch_size))
 
+    if isinstance(use_amp, str):
+        if use_amp != "auto":
+            raise ValueError(f"use_amp must be a bool or 'auto'; got {use_amp!r}.")
+        amp_enabled = device_t.type == "cuda" and amp_is_safe(net)
+    else:
+        amp_enabled = bool(use_amp) and device_t.type == "cuda"
+
     def _run(chunk):
         patches = []
         for z, y, x in chunk:
@@ -238,8 +280,10 @@ def deblur_volume_tiled(
                 p = F.pad(p, (0, padx, 0, pady, 0, padz), mode=pad_mode)
             patches.append(p)
 
-        with autocast(enabled=(use_amp and device_t.type == "cuda")):
+        with autocast(enabled=amp_enabled):
             preds = net(torch.cat(patches, dim=0) if len(patches) > 1 else patches[0])
+        # Autocast returns half; blending and accumulation stay in float32.
+        preds = preds.float()
 
         # Accumulate in coordinate order, matching the single-tile path exactly.
         for j, (z, y, x) in enumerate(chunk):
@@ -248,8 +292,14 @@ def deblur_volume_tiled(
             out[:, :, z:z+pd, y:y+ph, x:x+pw] += weighted
             wei[:, :, z:z+pd, y:y+ph, x:x+pw] += w3_cpu[:, :, :pd, :ph, :pw]
 
+    total = len(coords)
+    if progress is not None:
+        progress(0, total)
+
     i = 0
-    while i < len(coords):
+    while i < total:
+        if should_abort is not None and should_abort():
+            raise InferenceAborted(f"Inference aborted after {i} of {total} tiles.")
         chunk = coords[i:i + bs]
         try:
             _run(chunk)
@@ -261,6 +311,8 @@ def deblur_volume_tiled(
                 continue
             raise
         i += len(chunk)
+        if progress is not None:
+            progress(i, total)
 
     if device_t.type == "cuda":
         torch.cuda.empty_cache()
