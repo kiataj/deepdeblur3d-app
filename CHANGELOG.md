@@ -74,8 +74,8 @@ easy to trigger; changing the tile spin boxes by hand hit the same bug.
 ### Added
 
 **An info badge beside the Tiling control.** Hovering the "i" explains what tile
-size does and describes each preset with its measured VRAM and blending
-quality, so the choice is not guesswork. Each dropdown entry carries its own
+size does and describes each preset with its VRAM cost and how it trades
+blending against speed, so the choice is not guesswork. Each dropdown entry carries its own
 tooltip too.
 
 **Command line interface.** `deblur3d IN OUT` runs a single volume headlessly;

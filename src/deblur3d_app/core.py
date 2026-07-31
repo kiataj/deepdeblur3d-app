@@ -70,15 +70,15 @@ TILE_PRESETS: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
 }
 DEFAULT_PRESET = "Balanced (default)"
 
-# Per-tile VRAM is ~708 bytes/voxel for this model. Blending quality is the worst
-# slice-to-slice deviation from the volume median, measured on a 200x288x288
-# volume, so lower is smoother. Runtimes are deliberately not quoted: they depend
-# on the GPU, and relative speed is the part that transfers.
+# Per-tile VRAM is ~708 bytes/voxel for this model. Neither runtimes nor blending
+# scores are quoted: the first depends on the GPU and the second is a synthetic
+# measurement that would read as a quality guarantee. Relative wording is what
+# actually helps someone choose.
 TILE_PRESET_HELP: dict[str, str] = {
     "Balanced (default)": (
         "Tile 64x256x256, overlap 32x128x128, about 3.0 GB of VRAM per tile.\n"
-        "The widest overlap, giving the smoothest blending (3.9%), and the "
-        "slowest, since the model revisits each voxel several times.\n"
+        "The widest overlap, giving the smoothest blending, and the slowest, "
+        "since the model revisits each voxel several times.\n"
         "The only preset that reproduces output from before v2.1.\n"
         "Use for final and published results, and to match earlier runs."
     ),
@@ -86,13 +86,13 @@ TILE_PRESET_HELP: dict[str, str] = {
         "Tile 32x128x128, overlap 16x32x32, about 0.4 GB of VRAM per tile.\n"
         "Eight times less VRAM than the others, and the quickest, because small "
         "tiles with a narrow overlap add up to less work. Blending is a little "
-        "looser (4.8%).\n"
+        "looser than Balanced.\n"
         "Use on GPUs with limited memory, or for very large volumes."
     ),
     "Fast (less overlap)": (
         "Tile 64x256x256, overlap 16x64x64, about 3.0 GB of VRAM per tile.\n"
         "The same large tiles as Balanced but a narrower overlap, so there are "
-        "fewer tiles to get through. Blending is a little looser (4.2%).\n"
+        "fewer tiles to get through. Blending is a little looser than Balanced.\n"
         "Use when you want Balanced's large tiles in less time."
     ),
 }
