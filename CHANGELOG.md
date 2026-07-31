@@ -97,12 +97,17 @@ which deliberately does not subclass `RuntimeError` so the tile loop's OOM retry
 can never mistake it for an out-of-memory condition.
 
 **Update notification for the app, in both front ends.** The GUI checks on
-startup and offers to open the release page, and has a "Check for updates" button
-for an on-demand check that also confirms when you are current. The CLI prints a
-notice to stderr, suppressible with `--no-update-check` or the
-`DEBLUR3D_NO_UPDATE_CHECK` environment variable. This mirrors the existing prompt
-for new model revisions. The GUI check runs on a background thread, and both fail
-silently offline.
+startup and has a "Check for updates" button for an on-demand check that also
+confirms when you are current. The CLI prints a notice to stderr, suppressible
+with `--no-update-check` or the `DEBLUR3D_NO_UPDATE_CHECK` environment variable.
+The GUI check runs on a background thread, and both fail silently offline.
+
+Both show the release notes and the exact commands to update, chosen for how
+this copy was installed (`git pull` for a checkout, `pip install --upgrade`
+otherwise). Neither installs anything: the app is running from the files an
+update would replace, and a `git pull` can collide with local changes, so
+updating stays the user's decision. Verified end to end against the live GitHub
+API, since this repository has no published release to test against yet.
 
 **The control sliders show an editable value box.** The readout was already an
 editable spin box, but superqt draws it frameless so it read as a static label

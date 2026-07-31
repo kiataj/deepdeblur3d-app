@@ -18,6 +18,7 @@ from . import __version__
 from .core import (
     DEFAULT_PRESET,
     app_update_available,
+    update_instructions,
     HF_FILENAME,
     HF_REPO_ID,
     TILE_PRESETS,
@@ -31,7 +32,6 @@ from .core import (
 )
 
 VOLUME_SUFFIXES = (".tif", ".tiff", ".npy")
-RELEASES_URL = "https://github.com/kiataj/deepdeblur3d-app/releases/latest"
 
 
 def _resolve_device(requested: str) -> str:
@@ -125,15 +125,23 @@ def _report_update(enabled: bool):
     if not enabled or os.environ.get("DEBLUR3D_NO_UPDATE_CHECK"):
         return
     try:
-        tag = app_update_available()
+        info = app_update_available()
     except Exception:
         return
-    if tag:
-        print(
-            f"[deblur3d] Update available: {tag} (running {__version__}).\n"
-            f"[deblur3d]   {RELEASES_URL}",
-            file=sys.stderr,
-        )
+    if not info:
+        return
+    lines = [
+        f"[deblur3d] Update available: {info['title']} (running {__version__}).",
+        f"[deblur3d]   {info['url']}",
+    ]
+    notes = [n.rstrip() for n in info["notes"].splitlines() if n.strip()][:8]
+    if notes:
+        lines.append("[deblur3d]   release notes:")
+        lines += [f"[deblur3d]   | {n[:100]}" for n in notes]
+        lines.append("[deblur3d]   | ...")
+    lines.append("[deblur3d]   to update:")
+    lines += [f"[deblur3d]   $ {c}" for c in update_instructions().splitlines()]
+    print("\n".join(lines), file=sys.stderr)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

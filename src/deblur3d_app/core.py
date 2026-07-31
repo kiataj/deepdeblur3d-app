@@ -221,26 +221,65 @@ def ensure_model_assets(
     return weights_path, config_path
 
 
-def latest_app_release(timeout: float = 3.0) -> Optional[str]:
-    """Newest published release tag on GitHub, or None if it cannot be reached."""
+RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
+
+
+def latest_release_info(timeout: float = 3.0) -> Optional[dict]:
+    """Tag, title, notes and URL of the newest published release.
+
+    None when offline, rate-limited, or when the repository has no published
+    release. A pushed git tag is not enough; the API only reports Releases.
+    """
     url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8")).get("tag_name") or None
+            data = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
         return None
-
-
-def app_update_available() -> Optional[str]:
-    """The newer release tag if one exists, else None. Safe to call offline."""
-    tag = latest_app_release()
+    tag = data.get("tag_name")
     if not tag:
         return None
-    latest, current = parse_semver_tag(tag), parse_semver_tag(__version__)
+    return {
+        "tag": tag,
+        "title": (data.get("name") or tag).strip(),
+        "notes": (data.get("body") or "").strip(),
+        "url": data.get("html_url") or RELEASES_URL,
+    }
+
+
+def latest_app_release(timeout: float = 3.0) -> Optional[str]:
+    """Newest published release tag on GitHub, or None if it cannot be reached."""
+    info = latest_release_info(timeout)
+    return info["tag"] if info else None
+
+
+def app_update_available() -> Optional[dict]:
+    """Release info when a newer release exists, else None. Safe offline.
+
+    Dev builds are excluded: `parse_semver_tag` rejects prereleases, and a
+    `.devN` version is one, so a working copy is never nagged.
+    """
+    info = latest_release_info()
+    if not info:
+        return None
+    latest, current = parse_semver_tag(info["tag"]), parse_semver_tag(__version__)
     if latest is None or current is None:
         return None
-    return tag if latest > current else None
+    return info if latest > current else None
+
+
+def update_instructions() -> str:
+    """How to install the update, for the way this copy was installed.
+
+    Deliberately returns commands rather than running them: the app is executing
+    from the very files an update would replace, and a `git pull` can collide
+    with a user's local changes. Updating is the user's call, not ours.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    if (repo / ".git").exists():
+        return f'git -C "{repo}" pull\npip install -e "{repo}"'
+    return f"pip install --upgrade {APP_NAME}"
 
 
 def provenance(config_path: Optional[str]) -> dict:

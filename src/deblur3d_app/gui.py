@@ -40,6 +40,7 @@ from .core import (
     InferenceAborted,
     app_update_available,
     ensure_model_assets,
+    update_instructions,
     normalize_float01,
     provenance,
     run_inference,
@@ -177,7 +178,7 @@ def _stabilize_contrast(layer: NapariImage, lo: float = 0.0, hi: float = 1.0):
 class _Relay(QObject):
     """Marshals worker-thread events onto the Qt main thread."""
     progressed = Signal(int, int)
-    update_found = Signal(str)
+    update_found = Signal(dict)
     up_to_date = Signal()
 
 
@@ -238,11 +239,11 @@ def build_viewer() -> Viewer:
     def _check_for_update(announce_when_current: bool = False):
         # Network call, so it must not block startup or crash the app offline.
         try:
-            tag = app_update_available()
+            info = app_update_available()
         except Exception:
-            tag = None
-        if tag:
-            relay.update_found.emit(tag)
+            info = None
+        if info:
+            relay.update_found.emit(info)
         elif announce_when_current:
             relay.up_to_date.emit()
 
