@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Union
 from packaging.version import Version, InvalidVersion
 
 import numpy as np
@@ -421,6 +421,7 @@ def run_infer_bound(
     weights_path: str,
     config_path: Optional[str],
     reuse_cache: bool = True,
+    batch_size: Union[int, str] = "auto",
 ) -> np.ndarray:
     validate_volume_shape(np.asarray(vol_f32_01).shape)
     base, dev = _cached_model_from_paths(weights_path, config_path, device)
@@ -447,6 +448,7 @@ def run_infer_bound(
         tile=tile, overlap=overlap,
         device=dev, use_amp=use_amp if dev == "cuda" else False,
         pad_mode=pad_mode, clamp01=clamp01,
+        batch_size=batch_size,
     )
 
     D, H, W = pred_base.shape
@@ -530,6 +532,11 @@ def build_viewer() -> Viewer:
         use_amp={"label": "Use AMP", "value": False},
         pad_mode={"choices": ["reflect", "replicate", "constant"], "value": "reflect"},
         clamp01={"label": "Clamp [0,1]", "value": True},
+        batch_size={
+            "label": "Tiles per pass",
+            "choices": ["auto", "1", "2", "4", "8", "16"],
+            "value": "auto",
+        },
         strength={"label": "Strength", "min": 0.0, "max": 3.0, "step": 0.1, "value": 1.0},
         hp_sigma={"label": "HP Sigma (vox)", "min": 0.0, "max": 8.0, "step": 0.1, "value": 0.0},
         hp_gain={"label": "HP Gain", "min": 0.0, "max": 4.0, "step": 0.1, "value": 1.0},
@@ -543,6 +550,7 @@ def build_viewer() -> Viewer:
         use_amp: bool = False,
         pad_mode: str = "reflect",
         clamp01: bool = True,
+        batch_size: str = "auto",
         strength: float = 1.0,
         hp_sigma: float = 0.0,
         hp_gain: float = 1.0,
@@ -614,6 +622,7 @@ def build_viewer() -> Viewer:
                     weights_path=weights_path,
                     config_path=config_path,
                     reuse_cache=reuse_cache,
+                    batch_size=batch_size if batch_size == "auto" else int(batch_size),
                 ),
                 vol, device=device_to_use, extra_kwargs={}
             )
@@ -634,6 +643,7 @@ def build_viewer() -> Viewer:
                             **_provenance(config_path),
                             "device": device_to_use,
                             "tile": tile, "overlap": overlap,
+                            "batch_size": batch_size,
                             "strength": strength, "hp_sigma": hp_sigma,
                             "hp_gain": hp_gain, "lp_gain": lp_gain,
                         },

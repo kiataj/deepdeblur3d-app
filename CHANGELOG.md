@@ -3,6 +3,52 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+**Automatic batch sizing.** Tiles were processed one per forward pass, which
+underutilizes the GPU now that memory is bounded by the tile rather than the
+volume. `deblur_volume_tiled` takes a `batch_size` argument, defaulting to
+`"auto"`, exposed in the widget as "Tiles per pass".
+
+The budget is measured, not guessed. One probe forward at 32x64x64 gives the
+activation slope for the loaded model, which is linear in tile voxels; free VRAM
+comes from `torch.cuda.mem_get_info`. The probe costs about 10 ms, because the
+2.5 s of CUDA context and cuDNN initialization it triggers is a one-time cost
+the first real tile would otherwise pay. Two details matter: the probe subtracts
+the baseline allocation, since the 35 MB of weights is a fixed cost that would
+otherwise inflate the slope by 39% at probe size, and the result is scaled by
+0.8, because extrapolation under-predicts by up to 12% on tile shapes that are
+not powers of two. If a batch still does not fit, the batch is halved and
+retried rather than failing the run.
+
+Chosen batch sizes on an 8 GB card: 16 for a 32x64x64 tile, 6 for 64x128x128,
+1 for the 64x256x256 default. CPU inference always uses 1.
+
+Measured end to end, a 96x512x512 volume at a 32x64x64 tile goes from 5.6 s to
+4.2 s (1.32x). Larger tiles gain much less, 1.02x at 32x128x128, because host
+transfer and accumulation rather than the model dominate there. The gain is
+concentrated in small tiles, which is the regime memory-constrained users are in.
+
+Batching does not change the tiling grid, so Hann blending is untouched and
+`batch_size=1` is bit-for-bit identical to the previous implementation. Wider
+batches differ by about 1e-5 (max 1.24e-5 measured) because cuDNN may select a
+different kernel per batch size; `cudnn.deterministic = True` does not remove
+this. Set "Tiles per pass" to 1 for bit-reproducible output.
+
+The chosen batch size is recorded in `layer.metadata["deblur3d"]`.
+
+### Not doing
+
+**Automatic tile sizing from free VRAM** was designed and measured, then
+dropped. Tile size determines the tiling grid, so changing it changes the
+result: against a 32x64x64 reference the trained model differs by a mean of
+1.3e-2 and a max of 2.0e-1, roughly 850 levels of a 16-bit range. Selecting the
+tile from available VRAM would make output depend on the GPU and on whatever
+else was using it at the time, which is not acceptable for quantitative work.
+Tile size stays an explicit user choice.
+
 ## v2.0.0
 
 ### Fixed
@@ -83,9 +129,8 @@ on disk, and covered by a new `.gitignore`.
 
 ### Known limitations
 
-- Tile size is still chosen by hand. Automatic tile selection from available
-  VRAM, plus batching tiles per forward pass for throughput, is designed but
-  not implemented.
+- Tiles are processed one per forward pass. Batching them for throughput is
+  designed but not implemented.
 - The default overlap of 128 on a 256 tile is 50%, producing 343 tiles where an
   overlap of 32 would produce 125. Reducing it is roughly a 2.7x speedup but
   changes output, so the default is unchanged.
