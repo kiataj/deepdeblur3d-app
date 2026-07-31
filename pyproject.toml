@@ -28,9 +28,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Pick the extra that matches your GPU generation; the code runs on any of them.
+#
+#   cu128  Volta through Blackwell (sm_70..sm_120). Needed for RTX 40/50-series,
+#          which the old cu116 wheel has no kernels for.
+#   cu116  Kepler through Ampere (sm_37..sm_86). Only for Pascal and older cards,
+#          which torch dropped after 1.13.
 cpu = [
-  "torch==1.12.1",
-  "torchvision==0.13.1",
+  "torch>=1.12",
+]
+cu128 = [
+  "torch>=2.7",
 ]
 cu116 = [
   "torch==1.12.1+cu116",

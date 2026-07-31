@@ -23,6 +23,27 @@ class InferenceAborted(Exception):
     """
 
 
+def _autocast_factory():
+    """Return an autocast context manager that works across torch versions.
+
+    torch 2.4 deprecated `torch.cuda.amp.autocast` in favour of
+    `torch.amp.autocast("cuda")`; the old spelling still works but warns on every
+    call, and there is one call per batch.
+    """
+    modern = getattr(torch, "amp", None)
+    if modern is not None and hasattr(modern, "autocast"):
+        def autocast(enabled: bool):
+            return modern.autocast("cuda", enabled=enabled)
+        return autocast
+
+    from torch.cuda.amp import autocast as legacy_autocast  # torch < 2.4
+
+    def autocast(enabled: bool):
+        return legacy_autocast(enabled=enabled)
+
+    return autocast
+
+
 def amp_is_safe(net: torch.nn.Module) -> bool:
     """Whether autocast can be enabled for this model.
 
@@ -251,7 +272,7 @@ def deblur_volume_tiled(
     tile: Tuple[int, int, int] = (96, 128, 128),
     overlap: Tuple[int, int, int] = (24, 32, 32),
     device: str = "cuda",
-    use_amp: Union[bool, str] = "auto",
+    use_amp: bool = False,
     pad_mode: str = "reflect",
     clamp01: bool = True,
     batch_size: Union[int, str] = "auto",
@@ -268,9 +289,11 @@ def deblur_volume_tiled(
         tile:  (Dz, Dy, Dx) tile size.
         overlap: (Oz, Oy, Ox) overlap for blending.
         device: "cuda" or "cpu".
-        use_amp: enable CUDA autocast. "auto" turns it on whenever the device is
-            CUDA and the model has no InstanceNorm. Roughly 1.8x faster, at a
-            numerical cost around 6e-4.
+        use_amp: enable CUDA autocast. Off by default: whether half precision
+            helps depends on the cuDNN build, not the model. Measured on one card,
+            it is 1.7x faster on torch 1.12 with cuDNN 8 and 1.65x *slower* on
+            torch 2.9 with cuDNN 9, where plain fp32 beats both. Costs ~1e-3.
+            Ignored on CPU, and refused for models containing InstanceNorm.
         pad_mode: pad mode for edge tiles ("reflect" | "replicate" | "constant").
         clamp01: clamp output to [0,1] before returning.
         batch_size: tiles per forward pass. "auto" sizes it from free VRAM; an
@@ -329,8 +352,7 @@ def deblur_volume_tiled(
     step_y = th - oh if th < H else H
     step_x = tw - ow if tw < W else W
 
-    # Import here to avoid requiring CUDA on CPUs
-    from torch.cuda.amp import autocast
+    autocast = _autocast_factory()
 
     if isinstance(border_margin, str):
         if border_margin != "auto":
@@ -360,12 +382,7 @@ def deblur_volume_tiled(
     else:
         bs = max(1, int(batch_size))
 
-    if isinstance(use_amp, str):
-        if use_amp != "auto":
-            raise ValueError(f"use_amp must be a bool or 'auto'; got {use_amp!r}.")
-        amp_enabled = device_t.type == "cuda" and amp_is_safe(net)
-    else:
-        amp_enabled = bool(use_amp) and device_t.type == "cuda"
+    amp_enabled = bool(use_amp) and device_t.type == "cuda" and amp_is_safe(net)
 
     # Two-stage pipeline. Pageable host memory forces every copy to synchronize,
     # and a per-tile copy back costs one sync per tile, so the GPU sat idle

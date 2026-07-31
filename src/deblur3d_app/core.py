@@ -506,7 +506,7 @@ def run_inference(
     overlap: Tuple[int, int, int],
     weights_path: str,
     config_path: Optional[str],
-    use_amp: Union[bool, str] = "auto",
+    use_amp: bool = False,
     pad_mode: str = "reflect",
     clamp01: bool = True,
     strength: float = 1.0,

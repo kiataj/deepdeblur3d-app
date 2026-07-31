@@ -137,14 +137,16 @@ class AmpAndProgressTests(unittest.TestCase):
         self.assertTrue(amp_is_safe(torch.nn.Sequential(torch.nn.GroupNorm(1, 4))))
         self.assertFalse(amp_is_safe(torch.nn.Sequential(torch.nn.InstanceNorm3d(4))))
 
-    def test_rejects_unknown_use_amp_string(self):
-        with self.assertRaisesRegex(ValueError, "must be a bool or 'auto'"):
-            self._run(BatchRecordingNet(), use_amp="yes")
-
     def test_amp_is_inert_on_cpu(self):
-        a = self._run(BatchRecordingNet(), use_amp="auto")
+        # Half precision is CUDA-only, so the flag must not change CPU output.
+        a = self._run(BatchRecordingNet(), use_amp=True)
         b = self._run(BatchRecordingNet(), use_amp=False)
         np.testing.assert_array_equal(a, b)
+
+    def test_amp_is_off_by_default(self):
+        import inspect
+        from deblur3d.infer.tiled import deblur_volume_tiled as fn
+        self.assertIs(inspect.signature(fn).parameters["use_amp"].default, False)
 
 
 if __name__ == "__main__":

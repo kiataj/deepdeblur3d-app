@@ -95,8 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Override the preset's overlap.")
     g.add_argument("--tiles-per-pass", default="auto", metavar="N",
                    help="Tiles per forward pass; 'auto' sizes it from free VRAM.")
-    g.add_argument("--no-amp", action="store_true",
-                   help="Disable mixed precision (slower, bit-reproducible against older runs).")
+    g.add_argument("--amp", action="store_true",
+                   help="Enable mixed precision. Faster on torch 1.12, slower on torch 2.x "
+                        "where fp32 already beats it, and costs about 1e-3 of accuracy.")
     g.add_argument("--legacy-borders", action="store_true",
                    help="Do not extend the tile grid past the volume edge. Restores the "
                         "pre-3.0 behaviour where the outermost slice of each axis was an "
@@ -218,7 +219,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 vol,
                 device=device, tile=tile, overlap=overlap,
                 weights_path=weights_path, config_path=config_path,
-                use_amp=False if args.no_amp else "auto",
+                use_amp=args.amp,
                 strength=args.strength, hp_sigma=args.hp_sigma,
                 hp_gain=args.hp_gain, lp_gain=args.lp_gain,
                 batch_size=tiles_per_pass,

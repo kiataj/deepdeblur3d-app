@@ -17,7 +17,8 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(args.dtype, "uint16")
         self.assertEqual(args.tiles_per_pass, "auto")
         self.assertFalse(args.batch)
-        self.assertFalse(args.no_amp)
+        # Mixed precision is opt-in: it only helps on torch 1.12 and costs ~1e-3.
+        self.assertFalse(args.amp)
 
     def test_control_parameters_are_parsed(self):
         args = build_parser().parse_args(
