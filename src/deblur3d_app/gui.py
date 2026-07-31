@@ -22,7 +22,8 @@ from napari.layers import Image as NapariImage
 from napari.utils.notifications import show_info, show_warning, show_error
 from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import (
-    QLabel, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QAbstractSpinBox, QDoubleSpinBox, QLabel, QMessageBox, QProgressBar,
+    QPushButton, QVBoxLayout, QWidget,
 )
 from tqdm import tqdm
 
@@ -55,6 +56,38 @@ def _ask_yes_no(title: str, text: str) -> bool:
     return m.exec_() == QMessageBox.Yes
 
 
+CONTROL_PARAMS = ("strength", "hp_sigma", "hp_gain", "lp_gain")
+
+_READOUT_STYLE = """
+QDoubleSpinBox {
+    border: 1px solid palette(mid);
+    border-radius: 3px;
+    padding: 1px 2px;
+    min-width: 58px;
+    background: palette(base);
+}
+QDoubleSpinBox:focus { border: 1px solid palette(highlight); }
+"""
+
+
+def _make_readouts_editable(widget):
+    """Give each slider's readout a visible frame and spin arrows.
+
+    superqt's slider readout is already an editable QDoubleSpinBox, but it is
+    drawn frameless, so it reads as a static label and users do not realise they
+    can type an exact value into it.
+    """
+    for name in CONTROL_PARAMS:
+        sub = getattr(widget, name, None)
+        if sub is None:
+            continue
+        for box in sub.native.findChildren(QDoubleSpinBox):
+            box.setFrame(True)
+            box.setButtonSymbols(QAbstractSpinBox.UpDownArrows)
+            box.setStyleSheet(_READOUT_STYLE)
+            box.setToolTip("Type an exact value, or drag the slider.")
+
+
 def _stabilize_contrast(layer: NapariImage, lo: float = 0.0, hi: float = 1.0):
     """Pin the contrast domain to [0,1] so the slider keeps two usable handles."""
     try:
@@ -70,6 +103,7 @@ class _Relay(QObject):
     """Marshals worker-thread events onto the Qt main thread."""
     progressed = Signal(int, int)
     update_found = Signal(str)
+    up_to_date = Signal()
 
 
 class _ProgressPanel(QWidget):
@@ -82,9 +116,11 @@ class _ProgressPanel(QWidget):
         self.bar.setValue(0)
         self.abort_button = QPushButton("Abort")
         self.abort_button.setEnabled(False)
+        self.update_button = QPushButton("Check for updates")
         layout.addWidget(self.label)
         layout.addWidget(self.bar)
         layout.addWidget(self.abort_button)
+        layout.addWidget(self.update_button)
 
     def set_progress(self, done: int, total: int):
         total = max(1, total)
@@ -119,18 +155,34 @@ def build_viewer() -> Viewer:
         ):
             import webbrowser
             webbrowser.open(GITHUB_URL)
+        panel.update_button.setEnabled(True)
 
     relay.update_found.connect(_on_update)
 
-    def _check_for_update():
+    def _check_for_update(announce_when_current: bool = False):
         # Network call, so it must not block startup or crash the app offline.
         try:
             tag = app_update_available()
         except Exception:
-            return
+            tag = None
         if tag:
             relay.update_found.emit(tag)
+        elif announce_when_current:
+            relay.up_to_date.emit()
 
+    def _on_up_to_date():
+        panel.update_button.setEnabled(True)
+        show_info(f"DeepDeBlur3D {__version__} is up to date.")
+
+    relay.up_to_date.connect(_on_up_to_date)
+
+    def _manual_update_check():
+        panel.update_button.setEnabled(False)
+        threading.Thread(
+            target=lambda: _check_for_update(announce_when_current=True), daemon=True
+        ).start()
+
+    panel.update_button.clicked.connect(_manual_update_check)
     threading.Thread(target=_check_for_update, daemon=True).start()
 
     def _prepare_input_layer(layer: NapariImage) -> bool:
@@ -321,6 +373,13 @@ def build_viewer() -> Viewer:
         _launch(first_device)
 
     panel.abort_button.clicked.connect(lambda: (abort_event.set(), panel.label.setText("Aborting…")))
+
+    from magicgui.widgets import Label
+
+    heading = Label(value="Inference-time controls")
+    heading.native.setStyleSheet("font-weight: bold; margin-top: 6px;")
+    infer_w.insert(infer_w.index("strength"), heading)
+    _make_readouts_editable(infer_w)
 
     infer_w.enabled = False
     v.window.add_dock_widget(infer_w, name="DeepDeBlur3D", area="right")

@@ -25,10 +25,19 @@ an outer bar over volumes in batch mode. Aborting raises `InferenceAborted`,
 which deliberately does not subclass `RuntimeError` so the tile loop's OOM retry
 can never mistake it for an out-of-memory condition.
 
-**Update notification for the app.** On startup, when online, the newest GitHub
-release is compared against the running version and offers to open the release
-page. This mirrors the existing prompt for new model revisions. The check runs on
-a background thread and fails silently offline.
+**Update notification for the app, in both front ends.** The GUI checks on
+startup and offers to open the release page, and has a "Check for updates" button
+for an on-demand check that also confirms when you are current. The CLI prints a
+notice to stderr, suppressible with `--no-update-check` or the
+`DEBLUR3D_NO_UPDATE_CHECK` environment variable. This mirrors the existing prompt
+for new model revisions. The GUI check runs on a background thread, and both fail
+silently offline.
+
+**The control sliders show an editable value box.** The readout was already an
+editable spin box, but superqt draws it frameless so it read as a static label
+and users did not realise they could type an exact value. Strength, HP Sigma, HP
+Gain and LP Gain now show a bordered field with spin arrows and a tooltip, under
+an "Inference-time controls" heading.
 
 **Automatic batch sizing.** Tiles were processed one per forward pass, which
 underutilizes the GPU now that memory is bounded by the tile rather than the
@@ -96,15 +105,37 @@ returns already-normalized float32 input untouched instead of paying a full
 `np.clip` copy, so the GUI's display normalization and the inference path no
 longer duplicate a full-volume allocation.
 
+**The tile loop is pipelined, so the GPU stays fed.** GPU utilization sampled
+during a run oscillated between 74% and 100%, averaging about 90%: the GPU idled
+while the host packed the next batch, copied it over, and blended the previous
+one. Two things forced that serialization. Pageable host memory makes every copy
+synchronous, and the copy back ran once per tile, so a batch of 16 cost 16
+separate synchronization points.
+
+Tiles are now packed into pinned staging buffers and transferred on a dedicated
+CUDA stream, the copy back is one async transfer per batch into a pinned sink,
+and the buffers are double buffered so host packing and blending overlap with the
+previous batch's compute. Edge-tile padding moved to the host, which is
+bit-identical to padding on the device and keeps the transfer contiguous.
+
+Utilization is now a steady 100%, worth about 1.08x end to end (1.286s to 1.180s
+on a 96x384x384 volume, median of six runs after warmup). Blending order is
+unchanged, so `batch_size=1` remains bit-identical; verified on CPU, where no
+cuDNN kernel selection is involved, that the pipelined and serial loops agree
+exactly at batch sizes 1 and 4.
+
 ### Performance notes
 
 Profiling the tile loop with AMP enabled, on a 64x256x256 volume at a 32x64x64
 tile: model forward 83.5%, host-to-device 4.4%, device-to-host 3.2%, host
-accumulation 6.9%, final divide 1.8%. Pinned host memory and overlapping
-transfer with compute were considered and dropped: transfer is 7.6% of runtime,
-so the ceiling is not worth the complexity. An earlier note in this file inferred
+accumulation 6.9%, final divide 1.8%. That bounded the pipelining work above at
+roughly 1.1x, which is what it delivered. An earlier note in this file inferred
 that transfer dominated for large tiles; that was wrong. Large tiles gain less
 from batching because they already saturate the GPU, not because of transfer.
+
+The remaining runtime is the model forward itself. Beyond mixed precision, going
+faster would mean a smaller architecture, channels-last layouts, or an exported
+engine, none of which are in scope here.
 
 ### Not doing
 

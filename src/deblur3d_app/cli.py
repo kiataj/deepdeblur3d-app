@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -16,6 +17,7 @@ from tqdm import tqdm
 from . import __version__
 from .core import (
     DEFAULT_PRESET,
+    app_update_available,
     HF_FILENAME,
     HF_REPO_ID,
     TILE_PRESETS,
@@ -29,6 +31,7 @@ from .core import (
 )
 
 VOLUME_SUFFIXES = (".tif", ".tiff", ".npy")
+RELEASES_URL = "https://github.com/kiataj/deepdeblur3d-app/releases/latest"
 
 
 def _resolve_device(requested: str) -> str:
@@ -107,12 +110,32 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument("--quiet", action="store_true", help="Suppress progress bars.")
 
     p.add_argument("--list-presets", action="store_true", help="Print tile presets and exit.")
+    p.add_argument("--no-update-check", action="store_true",
+                   help="Skip the check for a newer release.")
     p.add_argument("--version", action="version", version=f"deblur3d {__version__}")
     return p
 
 
+def _report_update(enabled: bool):
+    """Print a notice if a newer release exists. Never fatal, never slow."""
+    if not enabled or os.environ.get("DEBLUR3D_NO_UPDATE_CHECK"):
+        return
+    try:
+        tag = app_update_available()
+    except Exception:
+        return
+    if tag:
+        print(
+            f"[deblur3d] Update available: {tag} (running {__version__}).\n"
+            f"[deblur3d]   {RELEASES_URL}",
+            file=sys.stderr,
+        )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+
+    _report_update(not args.no_update_check)
 
     if args.list_presets:
         for name, (tile, overlap) in TILE_PRESETS.items():
