@@ -5,6 +5,37 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+**The outermost slice of each axis was an unblended tile-edge prediction.**
+Reported as the last slice looking sharper and noisier than the rest. The first
+and last slice, row and column were each covered by exactly one tile, at a Hann
+blending weight of 1e-6 against about 0.98 in the interior. Since the accumulator
+is normalized by that weight, those voxels were the raw prediction from the very
+edge of a single tile, where the U-Net's zero-padded convolutions are least
+reliable. Everywhere else that error is averaged away by an overlapping
+neighbour; at the volume border there is no neighbour.
+
+The last slice was worse than the first because the model's residual declines
+smoothly toward the end of a tile (0.097, 0.089, 0.077, 0.071 on successive
+slices) and then jumps back to 0.090 on the final one, leaving it over-corrected
+relative to its neighbours.
+
+The tile grid now nudges its outermost tiles past each end of the volume, with
+the out-of-volume part reflected, so real voxels always sit inside a tile. On a
+test volume cropped from the interior of a larger block, high-frequency energy in
+the last slice relative to the interior went from 1.22 to 1.04, and in the first
+slice from 0.83 to 1.03.
+
+The outermost tiles are shifted rather than added, so this is close to free:
+1.046s to 1.058s on a 96x384x384 volume. Only an axis spanned by a single tile
+needs an extra one, which is 0.2% of the 10,432 geometries swept. That sweep also
+confirms the shift never opens a gap in coverage; an earlier version of the fix
+did, on volumes with only two tiles along an axis, which the sweep caught.
+
+This changes output at the volume border. Pass `--legacy-borders` (CLI) or
+`border_margin=0` (API) to reproduce earlier results.
+
 ### Added
 
 **Command line interface.** `deblur3d IN OUT` runs a single volume headlessly;

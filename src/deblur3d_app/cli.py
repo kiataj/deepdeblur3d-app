@@ -97,6 +97,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Tiles per forward pass; 'auto' sizes it from free VRAM.")
     g.add_argument("--no-amp", action="store_true",
                    help="Disable mixed precision (slower, bit-reproducible against older runs).")
+    g.add_argument("--legacy-borders", action="store_true",
+                   help="Do not extend the tile grid past the volume edge. Restores the "
+                        "pre-2.1 behaviour where the outermost slice of each axis was an "
+                        "unblended tile-edge prediction.")
 
     c = p.add_argument_group("controls")
     c.add_argument("--strength", type=float, default=1.0)
@@ -210,6 +214,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 strength=args.strength, hp_sigma=args.hp_sigma,
                 hp_gain=args.hp_gain, lp_gain=args.lp_gain,
                 batch_size=tiles_per_pass,
+                border_margin=0 if args.legacy_borders else "auto",
                 progress=None if args.quiet else on_progress,
                 # Each volume is independent; caching one residual across a batch
                 # would only ever hit on a repeat of the same volume.

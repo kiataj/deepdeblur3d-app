@@ -435,6 +435,7 @@ def run_inference(
     lp_gain: float = 1.0,
     reuse_cache: bool = True,
     batch_size: Union[int, str] = "auto",
+    border_margin: Union[int, str] = "auto",
     progress: Optional[Callable[[int, int], None]] = None,
     should_abort: Optional[Callable[[], bool]] = None,
 ) -> np.ndarray:
@@ -467,6 +468,7 @@ def run_inference(
         device=dev, use_amp=use_amp,
         pad_mode=pad_mode, clamp01=clamp01,
         batch_size=batch_size,
+        border_margin=border_margin,
         progress=progress,
         should_abort=should_abort,
     )

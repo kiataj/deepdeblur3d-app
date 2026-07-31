@@ -63,7 +63,11 @@ class VolumeShapeValidationTests(unittest.TestCase):
             device="cpu",
         )
 
-        self.assertEqual(net.seen_shapes, [(16, 16, 16)])
+        # Every tile is capped to the volume. There is more than one because the
+        # grid is extended past each end so border voxels are not tile-edge
+        # predictions; see BorderMarginTests.
+        self.assertTrue(net.seen_shapes)
+        self.assertTrue(all(s == (16, 16, 16) for s in net.seen_shapes), net.seen_shapes)
         np.testing.assert_allclose(result, volume, rtol=1e-5, atol=1e-6)
 
     def test_zero_overlap_preserves_tile_boundaries(self):

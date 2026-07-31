@@ -156,7 +156,15 @@ def _auto_batch_size(
     return max(1, min(_MAX_BATCH, int((free * _VRAM_SAFETY) // per_tile)))
 
 
-def _starts(L: int, tile: int, overlap: int) -> list[int]:
+def _starts(L: int, tile: int, overlap: int, margin: int = 0) -> list[int]:
+    """Tile origins along one axis.
+
+    With `margin > 0` the outermost tiles are nudged past the ends of the volume
+    so the outermost real voxels sit inside a tile rather than on its edge. The
+    interior grid is untouched and no tiles are added, so this costs nothing; it
+    stays gap-free because the margin never exceeds the overlap. Starts may be
+    negative or run past L, and the caller reflects the out-of-volume part.
+    """
     # step for interior tiles
     step = tile - overlap if tile < L else L
     # initial evenly spaced starts
@@ -165,7 +173,52 @@ def _starts(L: int, tile: int, overlap: int) -> list[int]:
     last = max(0, L - tile)
     if starts[-1] != last:
         starts.append(last)
+
+    if margin <= 0:
+        return starts
+
+    def shifted(m: int) -> list[int]:
+        if len(starts) == 1:
+            # A single tile spans the axis, so one shifted copy cannot keep both
+            # ends off an edge. This is the only case that costs an extra tile.
+            return [-m, m]
+        return [starts[0] - m] + starts[1:-1] + [starts[-1] + m]
+
+    def covers(candidate: list[int]) -> bool:
+        if candidate[0] > 0:
+            return False
+        reach = candidate[0] + tile
+        for s in candidate[1:]:
+            if s > reach:
+                return False
+            reach = max(reach, s + tile)
+        return reach >= L
+
+    # Pushing both ends outward can pull a sparse grid apart, so take the largest
+    # shift that still covers every voxel rather than assuming the full one fits.
+    for m in range(margin, 0, -1):
+        candidate = shifted(m)
+        if covers(candidate):
+            return candidate
     return starts
+
+
+def _border_margin(tile: Tuple[int, int, int], overlap: Tuple[int, int, int],
+                   minimum_size: int) -> tuple[int, int, int]:
+    """How far to extend the grid past each end of the volume.
+
+    A voxel on a tile's outer face is produced from zero-padded convolutions and
+    is unreliable. Interior tiles hide that behind an overlapping neighbour, but
+    the volume's own border has no neighbour, so its outermost slice was the raw
+    edge prediction at a blending weight of 1e-6 against ~0.98 inside.
+
+    One coarsest-level voxel (2**levels) is the scale over which that padding
+    contaminates the result, capped by the overlap so the extra tiles stay cheap.
+    """
+    return tuple(
+        0 if ov <= 0 else max(1, min(minimum_size, t // 4, ov))
+        for t, ov in zip(tile, overlap)
+    )
 
 
 @torch.no_grad()
@@ -179,6 +232,7 @@ def deblur_volume_tiled(
     pad_mode: str = "reflect",
     clamp01: bool = True,
     batch_size: Union[int, str] = "auto",
+    border_margin: Union[int, str, Tuple[int, int, int]] = "auto",
     progress: Optional[Callable[[int, int], None]] = None,
     should_abort: Optional[Callable[[], bool]] = None,
 ) -> np.ndarray:
@@ -200,6 +254,11 @@ def deblur_volume_tiled(
             int forces a value. Batching does not change the tiling grid, so it
             leaves blending untouched, but cuDNN may select a different kernel
             per batch size, which perturbs results at ~1e-5.
+        border_margin: how far to extend the tile grid past each end of the
+            volume so its outermost voxels are not produced from a tile's own
+            edge. "auto" derives it from the model depth and the overlap; 0
+            restores the pre-2.1 behaviour, where the first and last slice of
+            each axis were unblended tile-edge predictions.
         progress: called as progress(tiles_done, tiles_total) after each batch.
         should_abort: polled before each batch; if it returns True the run stops
             and raises InferenceAborted.
@@ -250,9 +309,25 @@ def deblur_volume_tiled(
     # Import here to avoid requiring CUDA on CPUs
     from torch.cuda.amp import autocast
 
-    zs = _starts(D, td, od)
-    ys = _starts(H, th, oh)
-    xs = _starts(W, tw, ow)
+    if isinstance(border_margin, str):
+        if border_margin != "auto":
+            raise ValueError(
+                f"border_margin must be an int, a 3-tuple, or 'auto'; got {border_margin!r}."
+            )
+        mz, my, mx = _border_margin((td, th, tw), (od, oh, ow), minimum_tile_size)
+    elif isinstance(border_margin, int):
+        mz = my = mx = max(0, border_margin)
+    else:
+        mz, my, mx = (max(0, int(m)) for m in border_margin)
+
+    def _clip(start: int, size: int, extent: int):
+        """Map a tile that may hang off either end onto the volume."""
+        d0, d1 = max(0, start), min(extent, start + size)
+        return d0, d1, d0 - start, d0 - start + (d1 - d0)
+
+    zs = _starts(D, td, od, mz)
+    ys = _starts(H, th, oh, my)
+    xs = _starts(W, tw, ow, mx)
     coords = [(z, y, x) for z in zs for y in ys for x in xs]
 
     if isinstance(batch_size, str):
@@ -287,22 +362,32 @@ def deblur_volume_tiled(
         the transfer a single contiguous copy.
         """
         for j, (z, y, x) in enumerate(chunk):
-            p = v[:, :, z:z+td, y:y+th, x:x+tw]
-            if p.shape[2:] != (td, th, tw):
-                p = F.pad(
-                    p,
-                    (0, tw - p.shape[4], 0, th - p.shape[3], 0, td - p.shape[2]),
-                    mode=pad_mode,
-                )
+            (dz0, dz1, lz0, lz1) = _clip(z, td, D)
+            (dy0, dy1, ly0, ly1) = _clip(y, th, H)
+            (dx0, dx1, lx0, lx1) = _clip(x, tw, W)
+            p = v[:, :, dz0:dz1, dy0:dy1, dx0:dx1]
+            pad = (lx0, tw - lx1, ly0, th - ly1, lz0, td - lz1)
+            if any(pad):
+                p = F.pad(p, pad, mode=pad_mode)
             stage[j:j+1].copy_(p)
         return stage[:len(chunk)]
 
     def _accumulate(chunk, host_out: torch.Tensor):
-        """Blend a completed batch, in coordinate order, matching batch=1."""
+        """Blend a completed batch, in coordinate order, matching batch=1.
+
+        Tiles may hang off either end of the volume; only the in-range part is
+        written back, so the reflected margin contributes nothing to the result.
+        """
         for j, (z, y, x) in enumerate(chunk):
-            pd = min(td, D - z); ph = min(th, H - y); pw = min(tw, W - x)
-            out[:, :, z:z+pd, y:y+ph, x:x+pw] += host_out[j:j+1, :, :pd, :ph, :pw]
-            wei[:, :, z:z+pd, y:y+ph, x:x+pw] += w3_cpu[:, :, :pd, :ph, :pw]
+            (dz0, dz1, lz0, lz1) = _clip(z, td, D)
+            (dy0, dy1, ly0, ly1) = _clip(y, th, H)
+            (dx0, dx1, lx0, lx1) = _clip(x, tw, W)
+            out[:, :, dz0:dz1, dy0:dy1, dx0:dx1] += host_out[
+                j:j+1, :, lz0:lz1, ly0:ly1, lx0:lx1
+            ]
+            wei[:, :, dz0:dz1, dy0:dy1, dx0:dx1] += w3_cpu[
+                :, :, lz0:lz1, ly0:ly1, lx0:lx1
+            ]
 
     def _submit(stage: torch.Tensor, sink: torch.Tensor, chunk):
         """Run one batch, leaving the copy back in flight."""
