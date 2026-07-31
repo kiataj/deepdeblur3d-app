@@ -70,28 +70,30 @@ TILE_PRESETS: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
 }
 DEFAULT_PRESET = "Balanced (default)"
 
-# Per-tile VRAM is ~708 bytes/voxel for this model. Times and blending quality
-# are measured on a 200x288x288 volume, RTX 3060 Ti; quality is the worst
-# slice-to-slice deviation from the volume median, so lower is smoother.
+# Per-tile VRAM is ~708 bytes/voxel for this model. Blending quality is the worst
+# slice-to-slice deviation from the volume median, measured on a 200x288x288
+# volume, so lower is smoother. Runtimes are deliberately not quoted: they depend
+# on the GPU, and relative speed is the part that transfers.
 TILE_PRESET_HELP: dict[str, str] = {
     "Balanced (default)": (
         "Tile 64x256x256, overlap 32x128x128, about 3.0 GB of VRAM per tile.\n"
-        "Smoothest blending (3.9%) and the slowest (7.6 s), because the wide "
-        "overlap makes the model revisit each voxel several times.\n"
+        "The widest overlap, giving the smoothest blending (3.9%), and the "
+        "slowest, since the model revisits each voxel several times.\n"
         "The only preset that reproduces output from before v2.1.\n"
         "Use for final and published results, and to match earlier runs."
     ),
     "Low memory": (
         "Tile 32x128x128, overlap 16x32x32, about 0.4 GB of VRAM per tile.\n"
-        "Eight times less VRAM, and the quickest here (2.5 s) because it "
-        "recomputes far less overlapping volume. Blending is slightly looser (4.8%).\n"
+        "Eight times less VRAM than the others, and the quickest, because small "
+        "tiles with a narrow overlap add up to less work. Blending is a little "
+        "looser (4.8%).\n"
         "Use on GPUs with limited memory, or for very large volumes."
     ),
     "Fast (less overlap)": (
         "Tile 64x256x256, overlap 16x64x64, about 3.0 GB of VRAM per tile.\n"
-        "The same large tiles as Balanced, so the same VRAM, but less redundant "
-        "overlap: 3.2 s at 4.2%.\n"
-        "Use when you want Balanced's large tiles without paying for its overlap."
+        "The same large tiles as Balanced but a narrower overlap, so there are "
+        "fewer tiles to get through. Blending is a little looser (4.2%).\n"
+        "Use when you want Balanced's large tiles in less time."
     ),
 }
 
