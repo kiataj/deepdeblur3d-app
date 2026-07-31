@@ -1,6 +1,10 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "deblur3d-gui"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Napari GUI for DeepDeBlur3D with Hugging Face model auto-download"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,6 +35,14 @@ cu116 = [
 
 [project.scripts]
 deblur3d-gui = "deblur3d_app.gui:main"
+
+[tool.setuptools_scm]
+# Version is derived from git tags; never edit it by hand. Tagged commits get the
+# bare tag (v1.2.0 -> 1.2.0), later commits get 1.3.0.devN+g<hash>.
+version_file = "src/deblur3d_app/_version.py"
+version_scheme = "guess-next-dev"
+local_scheme = "node-and-date"
+fallback_version = "0.0.0+unknown"
 
 [tool.setuptools.package-dir]
 "" = "src"

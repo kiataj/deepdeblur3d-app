@@ -41,6 +41,7 @@ except Exception:
         class RepositoryNotFoundError(Exception): ...
         class EntryNotFoundError(Exception): ...
 
+from . import __version__ as APP_VERSION
 from ._workers import make_infer_worker
 
 # ---- Project imports ----
@@ -181,6 +182,23 @@ def ensure_model_assets(spec: HFModelSpec) -> Tuple[str, Optional[str]]:
     if not weights_path or not Path(weights_path).is_file():
         raise RuntimeError("Weights file could not be resolved/downloaded.")
     return weights_path, config_path
+
+def _provenance(config_path: Optional[str]) -> dict:
+    """Identify the code and the weights behind a result, for reproducibility."""
+    cfg = {}
+    if config_path and os.path.isfile(config_path):
+        try:
+            cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
+        except Exception:
+            cfg = {}
+    st = _load_state()
+    return {
+        "app_version": APP_VERSION,
+        "model_repo": st.get("repo_id", HF_REPO_ID),
+        "model_revision": st.get("revision", "unknown"),
+        "model_version": cfg.get("model_version", "unknown"),
+        "arch_version": cfg.get("arch_version", "unknown"),
+    }
 
 # ----------------- I/O + normalization -----------------
 def _normalize_float01_like_io(vol: np.ndarray) -> np.ndarray:
@@ -447,7 +465,8 @@ def run_infer_bound(
 
 # ----------------- Napari GUI -----------------
 def build_viewer() -> Viewer:
-    v = Viewer(title="deblur3d — Inference")
+    print(f"[DeepDeBlur3D] app {APP_VERSION} | torch {torch.__version__}")
+    v = Viewer(title=f"deblur3d {APP_VERSION} — Inference")
     v.dims.ndisplay = 2
     v.grid.enabled = True
 
@@ -609,7 +628,16 @@ def build_viewer() -> Viewer:
                 lyr = v.add_image(
                     pred, name=layer_name, colormap="gray",
                     blending="translucent", opacity=0.7,
-                    metadata={"deblur3d_output": True},
+                    metadata={
+                        "deblur3d_output": True,
+                        "deblur3d": {
+                            **_provenance(config_path),
+                            "device": device_to_use,
+                            "tile": tile, "overlap": overlap,
+                            "strength": strength, "hp_sigma": hp_sigma,
+                            "hp_gain": hp_gain, "lp_gain": lp_gain,
+                        },
+                    },
                 )
                 # Stabilize contrast so the slider behaves correctly.
                 _stabilize_contrast(lyr, 0.0, 1.0)
