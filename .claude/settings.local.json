@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python3 -c \"from PIL import Image; imgs = ['c:/Users/Kiara/deepdeblur3d-app/img/S0017-1.png', 'c:/Users/Kiara/deepdeblur3d-app/img/filtered_s1.0_hps1.00_hpg0.20_lpg1.00_14-1.png']; [print\\(i, Image.open\\(i\\).size\\) for i in imgs]\")",
-      "Bash(python3 -c \"import struct, zlib; [print\\(f\\) for f in ['S0017-1.png', 'filtered_s1.0_hps1.00_hpg0.20_lpg1.00_14-1.png']]\")",
-      "Bash(python -c \"from PIL import Image; imgs = ['c:/Users/Kiara/deepdeblur3d-app/img/S0017-1.png', 'c:/Users/Kiara/deepdeblur3d-app/img/filtered_s1.0_hps1.00_hpg0.20_lpg1.00_14-1.png']; [print\\(i.split\\('/'\\)[-1], Image.open\\(i\\).size\\) for i in imgs]\")"
-    ]
-  }
-}

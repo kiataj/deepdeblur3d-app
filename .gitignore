@@ -7,3 +7,7 @@ build/
 dist/
 *.egg-info/
 .venv/
+
+# Per-machine Claude Code permissions; tracking it makes every local change
+# dirty the working tree, which setuptools-scm then stamps into the version.
+.claude/settings.local.json
