@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 import socket
 import time
 from dataclasses import dataclass
@@ -281,7 +282,11 @@ def _cached_model_from_paths(weights_path: str, config_path: Optional[str], devi
     return net, dev
 
 # ----------------- Residual cache -----------------
+# Entries hold two full-volume tensors, so they are kept in host memory and the
+# cache is capped: an unbounded GPU-resident cache pinned VRAM for every volume
+# the user had ever run.
 _RES_CACHE: dict[tuple, dict] = {}
+_RES_CACHE_MAXSIZE = 1
 
 def _fingerprint(arr: np.ndarray) -> tuple:
     arr = np.asarray(arr)
@@ -290,8 +295,15 @@ def _fingerprint(arr: np.ndarray) -> tuple:
 def _cache_key(weights_path: str, revision: str, device: str, vol: np.ndarray) -> tuple:
     return (weights_path, revision, device, *_fingerprint(vol))
 
+def _cache_store(key: tuple, vol_t: torch.Tensor, r_t: torch.Tensor):
+    while len(_RES_CACHE) >= _RES_CACHE_MAXSIZE:
+        _RES_CACHE.pop(next(iter(_RES_CACHE)))
+    _RES_CACHE[key] = {"vol_t": vol_t, "residual_t": r_t}
+
 def clear_residual_cache():
     _RES_CACHE.clear()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     show_info("DeepDeBlur3D residual cache cleared.")
 
 # ----------------- Contrast stabilization -----------------
@@ -330,6 +342,50 @@ class _ParamNetDirect(torch.nn.Module):
             lp_gain=self.lp_gain,
         )
 
+# ----------------- Slab-wise control application -----------------
+# Target voxels per slab. Bounds the device working set of the control step so it
+# stays O(slab) instead of O(volume).
+_CTRL_SLAB_VOXELS = 32_000_000
+
+@torch.no_grad()
+def _apply_controls_slabwise(
+    ctrl: ControlledUNet3D,
+    vol_t: torch.Tensor,
+    r_t: torch.Tensor,
+    dev: str,
+    *,
+    strength: float,
+    hp_sigma: float,
+    hp_gain: float,
+    lp_gain: float,
+) -> np.ndarray:
+    """Apply the control formula in Z-slabs, moving one slab at a time to `dev`.
+
+    Slabs are read back with a halo matching the Gaussian kernel radius used by
+    gaussian_blur3d, so the result is identical to a whole-volume application.
+    """
+    D, H, W = int(vol_t.shape[2]), int(vol_t.shape[3]), int(vol_t.shape[4])
+    out = np.empty((D, H, W), dtype=np.float32)
+
+    halo = max(1, int(math.ceil(3.0 * hp_sigma))) if hp_sigma and hp_sigma > 0 else 0
+    slab = max(1, min(D, int(_CTRL_SLAB_VOXELS // max(1, H * W))))
+
+    for z0 in range(0, D, slab):
+        z1 = min(D, z0 + slab)
+        a, b = max(0, z0 - halo), min(D, z1 + halo)
+        x = vol_t[:, :, a:b].to(dev, non_blocking=True)
+        r = r_t[:, :, a:b].to(dev, non_blocking=True)
+        y = ctrl.apply_controls(
+            x=x, r=r, strength=strength, hp_sigma=hp_sigma,
+            hp_gain=hp_gain, lp_gain=lp_gain,
+        )
+        out[z0:z1] = y[0, 0, z0 - a: z1 - a].to("cpu").numpy()
+        del x, r, y
+
+    if dev == "cuda":
+        torch.cuda.empty_cache()
+    return out
+
 # ----------------- Inference wrapper (with residual reuse) -----------------
 def run_infer_bound(
     vol_f32_01: np.ndarray,
@@ -356,17 +412,15 @@ def run_infer_bound(
     revision = st.get("revision", "unknown")
     key = _cache_key(weights_path, revision, dev, vol_f32_01)
 
+    ctrl = ControlledUNet3D(base, clamp01=clamp01).eval()
+
     # Fast path: reuse cached residual
     if reuse_cache and key in _RES_CACHE:
         entry = _RES_CACHE[key]
-        vol_t: torch.Tensor = entry["vol_t"]      # [1,1,D,H,W]
-        r_t:   torch.Tensor = entry["residual_t"] # [1,1,D,H,W]
-        ctrl = ControlledUNet3D(base, clamp01=clamp01).to(dev).eval()
-        with torch.no_grad():
-            y_ctrl = ctrl.apply_controls(x=vol_t, r=r_t,
-                                         strength=strength, hp_sigma=hp_sigma,
-                                         hp_gain=hp_gain, lp_gain=lp_gain)
-        return y_ctrl.squeeze(0).squeeze(0).detach().to("cpu").numpy().astype(np.float32, copy=False)
+        return _apply_controls_slabwise(
+            ctrl, entry["vol_t"], entry["residual_t"], dev,
+            strength=strength, hp_sigma=hp_sigma, hp_gain=hp_gain, lp_gain=lp_gain,
+        )
 
     # Cache miss → run UNet once (tiled) for base output; apply controls after
     pred_base = deblur_volume_tiled(
@@ -378,17 +432,18 @@ def run_infer_bound(
     )
 
     D, H, W = pred_base.shape
-    vol_t = torch.from_numpy(vol_f32_01).to(dev, dtype=torch.float32).view(1,1,D,H,W)
-    base_t = torch.from_numpy(pred_base).to(dev, dtype=torch.float32).view(1,1,D,H,W)
-    r_t    = base_t - vol_t
-    _RES_CACHE[key] = {"vol_t": vol_t, "residual_t": r_t}
+    # Kept on the host: two full-volume tensors per entry would otherwise sit in
+    # VRAM for the lifetime of the session.
+    vol_t = torch.from_numpy(vol_f32_01).reshape(1, 1, D, H, W)
+    base_t = torch.from_numpy(pred_base).reshape(1, 1, D, H, W)
+    r_t = base_t - vol_t
+    del base_t
+    _cache_store(key, vol_t, r_t)
 
-    ctrl = ControlledUNet3D(base, clamp01=clamp01).to(dev).eval()
-    with torch.no_grad():
-        y_ctrl = ctrl.apply_controls(x=vol_t, r=r_t,
-                                     strength=strength, hp_sigma=hp_sigma,
-                                     hp_gain=hp_gain, lp_gain=lp_gain)
-    return y_ctrl.squeeze(0).squeeze(0).detach().to("cpu").numpy().astype(np.float32, copy=False)
+    return _apply_controls_slabwise(
+        ctrl, vol_t, r_t, dev,
+        strength=strength, hp_sigma=hp_sigma, hp_gain=hp_gain, lp_gain=lp_gain,
+    )
 
 # ----------------- Napari GUI -----------------
 def build_viewer() -> Viewer:
@@ -572,6 +627,8 @@ def build_viewer() -> Viewer:
                 msg = str(e)
                 print(f"[DeepDeBlur3D] ERROR on {device_to_use}: {msg}")
                 if device_to_use == "cuda" and _is_cuda_error(e):
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                     show_warning("CUDA run failed. Falling back to CPU automatically…")
                     print("[DeepDeBlur3D] Falling back to CPU due to CUDA error")
                     _launch("cpu")
