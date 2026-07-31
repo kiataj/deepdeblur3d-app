@@ -141,5 +141,45 @@ class ShiftDoesNotOpenGapsTests(unittest.TestCase):
         self.assertEqual(len(_starts(16, 16, 4, 4)), 2)
 
 
+class BatchCapTests(unittest.TestCase):
+    def test_cap_never_drops_below_the_measured_value(self):
+        from unittest import mock
+
+        from deblur3d.infer import tiled
+
+        for sm_count in (16, 38, 68):
+            with self.subTest(sm=sm_count), mock.patch.object(
+                tiled.torch.cuda, "get_device_properties",
+                return_value=mock.Mock(multi_processor_count=sm_count),
+            ):
+                self.assertGreaterEqual(tiled._batch_cap(torch.device("cuda", 0)), 16)
+
+    def test_cap_grows_with_sm_count(self):
+        from unittest import mock
+
+        from deblur3d.infer import tiled
+
+        caps = []
+        for sm_count in (38, 108, 132):
+            with mock.patch.object(
+                tiled.torch.cuda, "get_device_properties",
+                return_value=mock.Mock(multi_processor_count=sm_count),
+            ):
+                caps.append(tiled._batch_cap(torch.device("cuda", 0)))
+        self.assertEqual(caps[0], 16)          # unchanged on the card it was measured on
+        self.assertGreater(caps[1], caps[0])   # A100-class gets more
+        self.assertGreater(caps[2], caps[1])   # H100-class more still
+
+    def test_falls_back_when_properties_are_unavailable(self):
+        from unittest import mock
+
+        from deblur3d.infer import tiled
+
+        with mock.patch.object(
+            tiled.torch.cuda, "get_device_properties", side_effect=RuntimeError("no cuda")
+        ):
+            self.assertEqual(tiled._batch_cap(torch.device("cuda", 0)), 16)
+
+
 if __name__ == "__main__":
     unittest.main()

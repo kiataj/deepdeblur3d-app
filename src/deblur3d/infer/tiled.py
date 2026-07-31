@@ -103,9 +103,25 @@ _BYTES_PER_VOXEL: dict = {}
 # and the caching allocator fragments, so this headroom is load-bearing.
 _VRAM_SAFETY = 0.8
 
-# Throughput saturates by 8..16 tiles per forward; past that the batch only costs
-# memory. Measured 1.49x at 32x64x64, 1.12x at 64x128x128.
+# Throughput saturates once there is enough parallel work to fill the SMs; past
+# that the batch only costs memory. Measured 1.49x at 32x64x64 and 1.12x at
+# 64x128x128 on a 38-SM card, saturating by 8..16 tiles, hence ~0.4 tiles per SM.
+#
+# The slope is extrapolated from that one GPU, so the floor keeps every card at
+# least at the value it was measured with: a larger GPU may get a larger batch,
+# none gets a smaller one. Passing an explicit batch_size bypasses this entirely.
 _MAX_BATCH = 16
+_MAX_BATCH_PER_SM = 0.4
+
+
+def _batch_cap(device_t: torch.device) -> int:
+    """Upper bound on tiles per forward, scaled to the GPU's SM count."""
+    try:
+        index = device_t.index if device_t.index is not None else torch.cuda.current_device()
+        sm_count = torch.cuda.get_device_properties(index).multi_processor_count
+    except (RuntimeError, AttributeError, AssertionError):
+        return _MAX_BATCH
+    return max(_MAX_BATCH, int(sm_count * _MAX_BATCH_PER_SM))
 
 # Small probes are dominated by fixed overheads and read high, so keep it at
 # least this large in each axis.
@@ -153,7 +169,7 @@ def _auto_batch_size(
         # mem_get_info is absent on some builds; a single tile always fit before.
         return 1
     per_tile = max(1.0, bpv * tile_voxels)
-    return max(1, min(_MAX_BATCH, int((free * _VRAM_SAFETY) // per_tile)))
+    return max(1, min(_batch_cap(device_t), int((free * _VRAM_SAFETY) // per_tile)))
 
 
 def _starts(L: int, tile: int, overlap: int, margin: int = 0) -> list[int]:
