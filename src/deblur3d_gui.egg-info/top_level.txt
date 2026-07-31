@@ -1,2 +1,0 @@
-deblur3d
-deblur3d_app
