@@ -1,8 +1,8 @@
 # DeepDeblur3D GUI
 
 [![Python](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-1.12%20%E2%80%93%202.x-orange)](https://pytorch.org/)
-[![CUDA](https://img.shields.io/badge/CUDA-11.6%20%2F%2012.8-lightgrey)](https://developer.nvidia.com/cuda-toolkit)
+[![PyTorch](<https://img.shields.io/badge/PyTorch-1.12%20%E2%80%93%202.x-orange>)](https://pytorch.org/)
+[![CUDA](<https://img.shields.io/badge/CUDA-11.6%20%2F%2012.8-lightgrey>)](https://developer.nvidia.com/cuda-toolkit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Hugging Face](<https://img.shields.io/badge/Hugging%20Face-HippoCanFly%2FDeepDeBlur3D-ffd21e?logo=huggingface&logoColor=000>)](https://huggingface.co/HippoCanFly/DeepDeBlur3D)
 
@@ -114,22 +114,11 @@ pip install -e .
 Pick the wheel that matches your GPU. The application itself is unchanged; only
 the compiled CUDA kernels differ.
 
-| Your GPU | Install |
-|---|---|
-| RTX 20/30/40/50-series, A100, H100 | `pip install -e .[cu128] --extra-index-url https://download.pytorch.org/whl/cu128` |
+| Your GPU                                  | Install                                                                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------ |
+| RTX 20/30/40/50-series, A100, H100        | `pip install -e .[cu128] --extra-index-url https://download.pytorch.org/whl/cu128` |
 | GTX 10-series and older (Pascal, Maxwell) | `pip install -e .[cu116] --extra-index-url https://download.pytorch.org/whl/cu116` |
-| No GPU | `pip install -e .[cpu]` |
-
-The `cu128` wheels carry kernels for `sm_70` to `sm_120`, which is what 40-series
-and 50-series cards need; the older `cu116` wheels stop at `sm_86` and will fail
-on those with "no kernel image is available for execution on the device". A newer
-CUDA toolkit or driver on the machine does not change this, because a pip-installed
-PyTorch bundles its own CUDA runtime and ignores the system one.
-
-Conversely, `cu116` is the only option left for Pascal and older, since PyTorch
-dropped those architectures after 1.13.
-
-Update your NVIDIA driver before installing the CUDA wheels if needed.
+| No GPU                                    | `pip install -e .[cpu]`                                                            |
 
 ### 5. Launch the GUI
 
@@ -167,15 +156,15 @@ Inputs may be TIFF stacks, `.npy` arrays, or directories of TIFF slices. In
 `--batch` mode, existing outputs are skipped unless `--overwrite` is passed, so
 an interrupted run resumes instead of repeating work.
 
-| Option                                                       | Purpose                                                          |
-| ------------------------------------------------------------ | ---------------------------------------------------------------- |
-| `--preset NAME`                                            | Tiling preset;`--list-presets` shows them                      |
-| `--tile Z Y X`, `--overlap Z Y X`                        | Override the preset                                              |
-| `--device {auto,cuda,cpu}`                                 | Defaults to CUDA when available                                  |
-| `--strength`, `--hp-sigma`, `--hp-gain`, `--lp-gain` | The control parameters above                                     |
-| `--tiles-per-pass N`                                       | Tiles per forward pass;`auto` sizes it from free VRAM          |
-| `--amp`                                                    | Enable mixed precision (helps only on torch 1.12; costs ~1e-3)   |
-| `--dtype {uint16,uint8,float32}`                           | Output data type                                                 |
+| Option                                                       | Purpose                                                        |
+| ------------------------------------------------------------ | -------------------------------------------------------------- |
+| `--preset NAME`                                            | Tiling preset;`--list-presets` shows them                    |
+| `--tile Z Y X`, `--overlap Z Y X`                        | Override the preset                                            |
+| `--device {auto,cuda,cpu}`                                 | Defaults to CUDA when available                                |
+| `--strength`, `--hp-sigma`, `--hp-gain`, `--lp-gain` | The control parameters above                                   |
+| `--tiles-per-pass N`                                       | Tiles per forward pass;`auto` sizes it from free VRAM        |
+| `--amp`                                                    | Enable mixed precision (helps only on torch 1.12; costs ~1e-3) |
+| `--dtype {uint16,uint8,float32}`                           | Output data type                                               |
 
 ### Reproducibility
 
@@ -183,7 +172,7 @@ Tile size determines the tiling grid, so changing it changes the result. Presets
 are fixed rather than derived from available VRAM for exactly this reason, and
 the preset, tile, overlap, model revision and app version are recorded on every
 result: in `layer.metadata["deblur3d"]` in the GUI, and printed at startup by the
-CLI. 
+CLI.
 
 ## Citation
 

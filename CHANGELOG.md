@@ -24,8 +24,7 @@ Major, because default output changes. To reproduce earlier results, pass
   pad mode, clamping, AMP, batch size and border margin.
 - **The residual cache pinned VRAM for the whole session.** Entries are now
   host-resident and capped at one.
-- The CPU fallback no longer retries while the failed CUDA allocation is held,
-  and aborting no longer prints a traceback.
+- The CPU fallback no longer retries while the failed CUDA allocation is held.
 
 ### Added
 
