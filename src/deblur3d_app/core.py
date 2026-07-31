@@ -58,9 +58,14 @@ STATE_PATH = STATE_DIR / "model_state.json"
 # "Balanced" reproduces the historical default exactly; changing tile or overlap
 # changes the tiling grid and therefore the result, so presets are fixed and
 # recorded in provenance rather than derived from the machine.
+#
+# Z overlap is held at half the tile depth. A quarter is not enough to blend away
+# the tile-edge error the model produces from its zero-padded convolutions:
+# measured 16% slice-to-slice deviation at overlap 8 on a 32-deep tile, against
+# 4.7% at 16.
 TILE_PRESETS: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
     "Balanced (default)": ((64, 256, 256), (32, 128, 128)),
-    "Low memory":         ((32, 128, 128), (8, 32, 32)),
+    "Low memory":         ((32, 128, 128), (16, 32, 32)),
     "Fast (less overlap)": ((64, 256, 256), (16, 64, 64)),
 }
 DEFAULT_PRESET = "Balanced (default)"

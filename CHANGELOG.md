@@ -36,6 +36,28 @@ did, on volumes with only two tiles along an axis, which the sweep caught.
 This changes output at the volume border. Pass `--legacy-borders` (CLI) or
 `border_margin=0` (API) to reproduce earlier results.
 
+**The border shift must not spend the overlap it borrows from.** The first cut of
+the fix above capped the shift at the full overlap, so on the "Fast" preset
+(16-voxel Z overlap on a 64-deep tile) the outermost tiles ended up merely
+abutting their neighbour with zero overlap. That replaced the border artifact
+with a worse unblended interior seam: 49.5% slice-to-slice deviation at the seam,
+against 47.4% at the border it was fixing. Reported from the GUI as the same
+artifact appearing on interior slices.
+
+The shift is now capped at half the overlap, and the backoff treats a
+zero-overlap seam as a failure rather than accepting it as gapless. Worst-case
+deviation on that preset drops from 49.5% to 4.2%.
+
+**The "Low memory" preset had too little Z overlap to blend at all.** Eight
+voxels on a 32-deep tile is 25%, which leaves each seam blending two predictions
+taken 4 voxels from a tile edge, well inside the contaminated zone: 16%
+deviation. Raised to 16, matching the half-tile overlap the other presets use,
+which brings it to 4.8%. It costs time, not memory, which is the right trade for
+a preset chosen to fit in limited VRAM.
+
+All three presets now sit in a 3.9-4.8% band, measured against the median slice
+of a volume cropped from the interior of a larger block.
+
 ### Added
 
 **Command line interface.** `deblur3d IN OUT` runs a single volume headlessly;

@@ -205,7 +205,9 @@ def _starts(L: int, tile: int, overlap: int, margin: int = 0) -> list[int]:
             return False
         reach = candidate[0] + tile
         for s in candidate[1:]:
-            if s > reach:
+            # `s == reach` is a gapless but unblended seam, which looks worse
+            # than the border artifact this shift exists to remove.
+            if s >= reach:
                 return False
             reach = max(reach, s + tile)
         return reach >= L
@@ -229,10 +231,15 @@ def _border_margin(tile: Tuple[int, int, int], overlap: Tuple[int, int, int],
     edge prediction at a blending weight of 1e-6 against ~0.98 inside.
 
     One coarsest-level voxel (2**levels) is the scale over which that padding
-    contaminates the result, capped by the overlap so the extra tiles stay cheap.
+    contaminates the result.
+
+    Capped at half the overlap: the outermost tiles are shifted outward, which
+    spends overlap at the seam behind them. Spending all of it leaves those two
+    tiles merely abutting, replacing the border artifact with a worse unblended
+    seam (measured 49% against 4% at half).
     """
     return tuple(
-        0 if ov <= 0 else max(1, min(minimum_size, t // 4, ov))
+        0 if ov < 2 else max(1, min(minimum_size, t // 4, ov // 2))
         for t, ov in zip(tile, overlap)
     )
 

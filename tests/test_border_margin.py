@@ -181,5 +181,50 @@ class BatchCapTests(unittest.TestCase):
             self.assertEqual(tiled._batch_cap(torch.device("cuda", 0)), 16)
 
 
+class SeamOverlapTests(unittest.TestCase):
+    """The border shift must not spend the overlap it borrows from."""
+
+    @staticmethod
+    def min_seam_overlap(starts, tile):
+        return min((starts[i] + tile) - starts[i + 1] for i in range(len(starts) - 1))
+
+    def test_no_preset_produces_an_unblended_seam(self):
+        from deblur3d_app.core import TILE_PRESETS
+
+        for name, (tile, overlap) in TILE_PRESETS.items():
+            for axis, (t, ov) in enumerate(zip(tile, overlap)):
+                length = max(4 * t, 200)
+                m = _border_margin(tile, overlap, 16)[axis]
+                starts = _starts(length, t, ov, m)
+                if len(starts) < 2:
+                    continue
+                with self.subTest(preset=name, axis="ZYX"[axis]):
+                    self.assertGreater(self.min_seam_overlap(starts, t), 0)
+
+    def test_shift_keeps_at_least_half_the_overlap(self):
+        for t, ov in ((64, 16), (64, 32), (32, 8), (256, 128)):
+            m = _border_margin((t,) * 3, (ov,) * 3, 16)[0]
+            starts = _starts(max(4 * t, 200), t, ov, m)
+            if len(starts) < 2:
+                continue
+            with self.subTest(tile=t, overlap=ov):
+                self.assertGreaterEqual(self.min_seam_overlap(starts, t), ov // 2)
+
+    def test_sweep_never_creates_a_zero_overlap_seam(self):
+        for L in range(32, 400, 7):
+            for t in (16, 32, 64, 128):
+                if t > L:
+                    continue
+                for ov in (2, 4, 8, 16, 32, 64):
+                    if ov >= t:
+                        continue
+                    m = _border_margin((t,) * 3, (ov,) * 3, 16)[0]
+                    starts = _starts(L, t, ov, m)
+                    if len(starts) < 2:
+                        continue
+                    with self.subTest(L=L, tile=t, ov=ov):
+                        self.assertGreater(self.min_seam_overlap(starts, t), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
