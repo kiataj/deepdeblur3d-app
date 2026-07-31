@@ -2,6 +2,7 @@
 """Napari front end. All inference logic lives in core.py."""
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from typing import Optional, Tuple
@@ -44,6 +45,27 @@ from .core import (
 )
 
 GITHUB_URL = "https://github.com/kiataj/deepdeblur3d-app/releases/latest"
+
+
+def _quiet_directwrite_font_warning():
+    """Drop one benign Qt warning on Windows; forward every other Qt message.
+
+    napari's dock widgets plus magicgui make Qt resolve a System style-hint font,
+    which on Windows is the legacy raster font MS Sans Serif that DirectWrite
+    cannot build a face from. Reproducible with napari and magicgui alone, with
+    none of this package's code involved, and nothing a user can act on, but it
+    printed on every launch.
+    """
+    if sys.platform != "win32":
+        return
+    from qtpy.QtCore import qInstallMessageHandler
+
+    def handler(mode, context, message):
+        if "CreateFontFaceFromHDC" in message:
+            return
+        print(message, file=sys.stderr)
+
+    qInstallMessageHandler(handler)
 
 
 def _ask_yes_no(title: str, text: str) -> bool:
@@ -135,6 +157,7 @@ class _ProgressPanel(QWidget):
 
 
 def build_viewer() -> Viewer:
+    _quiet_directwrite_font_warning()
     print(f"[DeepDeBlur3D] app {__version__} | torch {torch.__version__}")
     v = Viewer(title=f"deblur3d {__version__} — Inference")
     v.dims.ndisplay = 2
