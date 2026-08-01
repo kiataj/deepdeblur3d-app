@@ -2,6 +2,22 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## v3.0.1 (2026-08-01)
+
+### Fixed
+
+- The spin arrows on the control readouts moved the displayed number without
+  changing the value used for inference, so a nudged strength ran at the old one.
+- numpy 2 promoted normalized float volumes to float64, doubling their memory in
+  the same path the out-of-memory work targeted. Integer inputs were unaffected,
+  which is why it did not show up in a TIFF run.
+
+### Added
+
+- numpy 2 is supported; the `numpy<2` pin is gone.
+- CI: the suite runs on Python 3.10 and 3.12 across torch 1.12.1 and 2.9.1 and
+  numpy 1 and 2, plus a wheel build that rejects a version built from a dirty tree.
+
 ## v3.0.0 (2026-07-31)
 
 Major, because default output changes. To reproduce earlier results, pass
