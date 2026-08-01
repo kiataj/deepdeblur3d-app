@@ -38,7 +38,8 @@ Major, because default output changes. To reproduce earlier results, pass
 
 ### Changed
 
-- **Mixed precision is on by default.**
+- **Mixed precision is off by default**, opt in with `--amp`. It is faster on
+  torch 1.12 but slower on torch 2.x, where fp32 beats it.
 - **The GUI is down from 16 controls to 6.**
 
 ## v2.0.0
