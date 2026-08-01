@@ -110,6 +110,21 @@ def _make_readouts_editable(widget):
             box.setButtonSymbols(QAbstractSpinBox.UpDownArrows)
             box.setStyleSheet(_READOUT_STYLE)
             box.setToolTip("Type an exact value, or drag the slider.")
+            _bind_readout(box, sub)
+
+
+def _bind_readout(box: QDoubleSpinBox, slider):
+    """Push every readout edit into the parameter, not just committed typing.
+
+    superqt's readout only propagates on editingFinished, which typing followed
+    by Enter or a focus change does emit. The spin arrows do not, so clicking one
+    moved the displayed number while the value used for inference stayed put.
+    """
+    def on_changed(value: float):
+        if slider.value != value:
+            slider.value = value
+
+    box.valueChanged.connect(on_changed)
 
 
 _INFO_BADGE_STYLE = """
