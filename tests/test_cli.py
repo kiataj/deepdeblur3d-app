@@ -1,6 +1,8 @@
 import io
+import os
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -39,10 +41,21 @@ class ParserTests(unittest.TestCase):
             build_parser().parse_args(["a.tif", "b.tif", "--preset", "nonexistent"])
 
     def test_list_presets_exits_cleanly_without_io_args(self):
+        # --no-update-check keeps this hermetic; without it the run reaches the
+        # GitHub API, which is slow and rate-limited on shared CI runners.
         buf = io.StringIO()
         with redirect_stdout(buf):
-            self.assertEqual(main(["--list-presets"]), 0)
+            self.assertEqual(main(["--list-presets", "--no-update-check"]), 0)
         self.assertIn("Balanced (default)", buf.getvalue())
+
+    def test_update_check_can_be_disabled_by_environment(self):
+        import deblur3d_app.cli as cli
+
+        called = []
+        with mock.patch.object(cli, "app_update_available", lambda: called.append(1)):
+            with mock.patch.dict(os.environ, {"DEBLUR3D_NO_UPDATE_CHECK": "1"}):
+                cli._report_update(True)
+        self.assertEqual(called, [])
 
 
 class TripletTests(unittest.TestCase):

@@ -34,6 +34,15 @@ class NormalizeTests(unittest.TestCase):
         self.assertGreaterEqual(float(out.min()), 0.0)
         self.assertLessEqual(float(out.max()), 1.0)
 
+    def test_output_is_always_float32(self):
+        # numpy 2's NEP 50 promotion turned the percentile branch's output into
+        # float64, doubling the memory of every volume that took it.
+        for dtype in (np.uint8, np.uint16, np.int16, np.float32, np.float64):
+            for scale in (1.0, 100.0, 65535.0):
+                with self.subTest(dtype=np.dtype(dtype).name, scale=scale):
+                    a = (np.random.default_rng(0).random((4, 8, 8)) * scale).astype(dtype)
+                    self.assertEqual(normalize_float01(a).dtype, np.float32)
+
     def test_two_dimensional_input_is_promoted(self):
         self.assertEqual(normalize_float01(np.zeros((4, 4), np.float32)).shape, (1, 4, 4))
 

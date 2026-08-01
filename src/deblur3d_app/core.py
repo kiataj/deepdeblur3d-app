@@ -327,7 +327,10 @@ def normalize_float01(vol: np.ndarray) -> np.ndarray:
     if vmin >= 0.0 and vmax <= 1.5:
         return np.clip(x, 0.0, 1.0)
 
-    lo, hi = np.percentile(x, [1.0, 99.9])
+    # Plain floats, not numpy scalars: np.percentile returns float64, and under
+    # NEP 50 (numpy 2) a float64 scalar promotes the float32 volume to float64,
+    # silently doubling its memory. A Python float stays weak and preserves it.
+    lo, hi = (float(v) for v in np.percentile(x, [1.0, 99.9]))
     if not np.isfinite(lo) or not np.isfinite(hi) or (hi - lo) < 1e-6:
         span = max(vmax - vmin, 1.0)
         lo, hi = vmin, vmin + span
