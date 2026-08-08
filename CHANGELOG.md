@@ -2,6 +2,17 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- The control parameter fields rendered blank on some installs, their value
+  readable only once selected. The readout styled its background with
+  `palette(base)`, which resolves against the Qt palette and so ignores the
+  napari theme, while the text colour came from napari's own stylesheet. Where
+  the two happened to coincide the text was invisible. The style now sets only
+  the frame and leaves both colours to the theme.
+
 ## v3.0.1 (2026-08-01)
 
 ### Fixed

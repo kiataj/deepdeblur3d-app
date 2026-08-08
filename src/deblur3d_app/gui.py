@@ -82,15 +82,19 @@ def _ask_yes_no(title: str, text: str) -> bool:
 
 CONTROL_PARAMS = ("strength", "hp_sigma", "hp_gain", "lp_gain")
 
+# Frame only: no background and no text colour. napari themes the widget through
+# its own stylesheet while palette(...) resolves against the Qt palette, so
+# setting one of the pair here can land the text on top of a background of the
+# same colour, which made these fields render blank until you selected the text.
+# A translucent grey border reads on both the light and the dark theme.
 _READOUT_STYLE = """
 QDoubleSpinBox {
-    border: 1px solid palette(mid);
+    border: 1px solid rgba(128, 128, 128, 0.55);
     border-radius: 3px;
     padding: 1px 2px;
     min-width: 58px;
-    background: palette(base);
 }
-QDoubleSpinBox:focus { border: 1px solid palette(highlight); }
+QDoubleSpinBox:focus { border: 1px solid rgba(110, 165, 255, 0.9); }
 """
 
 
