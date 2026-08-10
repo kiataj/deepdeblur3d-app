@@ -2,6 +2,24 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## v3.0.3 (2026-08-10)
+
+### Added
+
+- **A one-click update.** The update notice now has an "Update now" button that
+  installs the release here and streams the commands' output to a dialog, then
+  asks for a restart. It refuses while an inference is running, and refuses on a
+  checkout with uncommitted changes rather than overwriting them.
+
+### Fixed
+
+- The update dialog interpolated the whole release payload into one line, since
+  it still treated it as a string after the check began returning a record. It
+  now shows the title, the notes behind "Show Details", and the commands.
+- The fallback update command pointed at PyPI, where this package is not
+  published, so it failed for anyone who had not cloned. It now installs from
+  the tag, which needs no clone.
+
 ## v3.0.2 (2026-08-09)
 
 ### Fixed

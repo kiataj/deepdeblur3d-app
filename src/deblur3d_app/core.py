@@ -353,22 +353,15 @@ def perform_update(tag: Optional[str] = None,
 
 
 def update_instructions(tag: Optional[str] = None) -> str:
-    """How to install the update, for the way this copy was installed.
+    """The very commands `perform_update` would run, rendered for a terminal.
 
-    Deliberately returns commands rather than running them: the app is executing
-    from the very files an update would replace, and a `git pull` can collide
-    with a user's local changes. Updating is the user's call, not ours.
+    Derived from `update_commands` rather than written out separately, so what a
+    user is told to type can never drift from what the button actually runs.
     """
-    repo = Path(__file__).resolve().parents[2]
-    if (repo / ".git").exists():
-        # An editable checkout runs straight from the working tree, so the pull
-        # is what updates it; the reinstall only matters if a release changed
-        # dependencies or entry points.
-        return f'git -C "{repo}" pull\npip install -e "{repo}"'
-    # Not on PyPI, so "pip install --upgrade deblur3d-gui" would fail. Install
-    # straight from the tag instead; no clone needed.
-    ref = tag or "main"
-    return f'pip install --upgrade "{APP_NAME} @ git+https://github.com/{GITHUB_REPO}@{ref}"'
+    def show(part: str) -> str:
+        return f'"{part}"' if " " in part else part
+
+    return "\n".join(" ".join(show(p) for p in cmd) for cmd in update_commands(tag))
 
 
 def provenance(config_path: Optional[str]) -> dict:
