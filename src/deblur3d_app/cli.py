@@ -141,7 +141,7 @@ def _report_update(enabled: bool):
         lines += [f"[deblur3d]   | {n[:100]}" for n in notes]
         lines.append("[deblur3d]   | ...")
     lines.append("[deblur3d]   to update:")
-    lines += [f"[deblur3d]   $ {c}" for c in update_instructions().splitlines()]
+    lines += [f"[deblur3d]   $ {c}" for c in update_instructions(info['tag']).splitlines()]
     print("\n".join(lines), file=sys.stderr)
 
 

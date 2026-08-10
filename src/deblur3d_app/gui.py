@@ -23,7 +23,7 @@ from napari.layers import Image as NapariImage
 from napari.utils.notifications import show_info, show_warning, show_error
 from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtWidgets import (
-    QAbstractSpinBox, QDoubleSpinBox, QLabel, QMessageBox, QProgressBar,
+    QApplication, QAbstractSpinBox, QDoubleSpinBox, QLabel, QMessageBox, QProgressBar,
     QPushButton, QVBoxLayout, QWidget,
 )
 from tqdm import tqdm
@@ -243,14 +243,29 @@ def build_viewer() -> Viewer:
 
     relay.progressed.connect(panel.set_progress)
 
-    def _on_update(tag: str):
-        if _ask_yes_no(
-            "Update available",
-            f"DeepDeBlur3D {tag} is available; you are running {__version__}.\n\n"
-            f"Open the release page?",
-        ):
+    def _on_update(info: dict):
+        commands = update_instructions(info.get("tag"))
+        box = QMessageBox()
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("Update available")
+        box.setText(f"<b>DeepDeBlur3D {info['title']}</b> is available.")
+        box.setInformativeText(
+            f"You are running {__version__}.\n\n"
+            "This does not install the update. Run:\n\n"
+            f"{commands}"
+        )
+        box.setDetailedText(info.get("notes") or "The release has no notes.")
+        open_button = box.addButton("Open release page", QMessageBox.ActionRole)
+        copy_button = box.addButton("Copy update command", QMessageBox.ActionRole)
+        box.addButton("Close", QMessageBox.RejectRole)
+        box.exec_()
+        clicked = box.clickedButton()
+        if clicked is open_button:
             import webbrowser
-            webbrowser.open(GITHUB_URL)
+            webbrowser.open(info.get("url") or GITHUB_URL)
+        elif clicked is copy_button:
+            QApplication.clipboard().setText(commands)
+            show_info("Update command copied to the clipboard.")
         panel.update_button.setEnabled(True)
 
     relay.update_found.connect(_on_update)

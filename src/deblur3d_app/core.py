@@ -269,7 +269,7 @@ def app_update_available() -> Optional[dict]:
     return info if latest > current else None
 
 
-def update_instructions() -> str:
+def update_instructions(tag: Optional[str] = None) -> str:
     """How to install the update, for the way this copy was installed.
 
     Deliberately returns commands rather than running them: the app is executing
@@ -278,8 +278,14 @@ def update_instructions() -> str:
     """
     repo = Path(__file__).resolve().parents[2]
     if (repo / ".git").exists():
+        # An editable checkout runs straight from the working tree, so the pull
+        # is what updates it; the reinstall only matters if a release changed
+        # dependencies or entry points.
         return f'git -C "{repo}" pull\npip install -e "{repo}"'
-    return f"pip install --upgrade {APP_NAME}"
+    # Not on PyPI, so "pip install --upgrade deblur3d-gui" would fail. Install
+    # straight from the tag instead; no clone needed.
+    ref = tag or "main"
+    return f'pip install --upgrade "{APP_NAME} @ git+https://github.com/{GITHUB_REPO}@{ref}"'
 
 
 def provenance(config_path: Optional[str]) -> dict:
