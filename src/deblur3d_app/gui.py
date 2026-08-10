@@ -23,8 +23,8 @@ from napari.layers import Image as NapariImage
 from napari.utils.notifications import show_info, show_warning, show_error
 from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtWidgets import (
-    QApplication, QAbstractSpinBox, QDoubleSpinBox, QLabel, QMessageBox, QProgressBar,
-    QPushButton, QVBoxLayout, QWidget,
+    QApplication, QAbstractSpinBox, QDialog, QDoubleSpinBox, QLabel, QMessageBox,
+    QProgressBar, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 from tqdm import tqdm
 
@@ -40,6 +40,8 @@ from .core import (
     InferenceAborted,
     app_update_available,
     ensure_model_assets,
+    perform_update,
+    update_blocked_reason,
     update_instructions,
     normalize_float01,
     provenance,
@@ -199,6 +201,8 @@ class _Relay(QObject):
     progressed = Signal(int, int)
     update_found = Signal(dict)
     up_to_date = Signal()
+    update_log = Signal(str)
+    update_done = Signal(bool)
 
 
 class _ProgressPanel(QWidget):
@@ -243,6 +247,66 @@ def build_viewer() -> Viewer:
 
     relay.progressed.connect(panel.set_progress)
 
+    def _run_update(info: dict):
+        """Install the update here, streaming the commands' output to a dialog."""
+        if panel.abort_button.isEnabled():
+            show_warning("Finish or abort the running inference before updating.")
+            return
+        reason = update_blocked_reason()
+        if reason:
+            warn = QMessageBox()
+            warn.setIcon(QMessageBox.Warning)
+            warn.setWindowTitle("Cannot update automatically")
+            warn.setText("This copy cannot be updated in place.")
+            warn.setInformativeText(reason)
+            warn.exec_()
+            return
+
+        dlg = QDialog()
+        dlg.setWindowTitle(f"Updating to {info['title']}")
+        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowCloseButtonHint)
+        dlg.resize(700, 380)
+        layout = QVBoxLayout(dlg)
+        status = QLabel("Running the update…")
+        log = QTextEdit()
+        log.setReadOnly(True)
+        log.setLineWrapMode(QTextEdit.NoWrap)
+        close = QPushButton("Close")
+        close.setEnabled(False)
+        close.clicked.connect(dlg.accept)
+        layout.addWidget(status)
+        layout.addWidget(log)
+        layout.addWidget(close)
+
+        def on_line(line: str):
+            log.append(line)
+
+        def on_done(ok: bool):
+            status.setText(
+                f"Updated to {info['title']}. Restart DeepDeBlur3D to use it."
+                if ok else
+                "Update failed. The log above shows why; you can still update by hand."
+            )
+            close.setEnabled(True)
+
+        relay.update_log.connect(on_line)
+        relay.update_done.connect(on_done)
+
+        def work():
+            ok = False
+            try:
+                ok = perform_update(info.get("tag"), on_output=relay.update_log.emit)
+            except Exception as e:  # never leave the dialog spinning
+                relay.update_log.emit(f"unexpected error: {e}")
+            relay.update_done.emit(ok)
+
+        threading.Thread(target=work, daemon=True).start()
+        try:
+            dlg.exec_()
+        finally:
+            relay.update_log.disconnect(on_line)
+            relay.update_done.disconnect(on_done)
+
     def _on_update(info: dict):
         commands = update_instructions(info.get("tag"))
         box = QMessageBox()
@@ -251,16 +315,21 @@ def build_viewer() -> Viewer:
         box.setText(f"<b>DeepDeBlur3D {info['title']}</b> is available.")
         box.setInformativeText(
             f"You are running {__version__}.\n\n"
-            "This does not install the update. Run:\n\n"
+            "\"Update now\" installs it here, then you restart the app.\n"
+            "To do it yourself instead:\n\n"
             f"{commands}"
         )
         box.setDetailedText(info.get("notes") or "The release has no notes.")
+        update_now = box.addButton("Update now", QMessageBox.AcceptRole)
         open_button = box.addButton("Open release page", QMessageBox.ActionRole)
-        copy_button = box.addButton("Copy update command", QMessageBox.ActionRole)
-        box.addButton("Close", QMessageBox.RejectRole)
+        copy_button = box.addButton("Copy command", QMessageBox.ActionRole)
+        box.addButton("Later", QMessageBox.RejectRole)
+        box.setDefaultButton(update_now)
         box.exec_()
         clicked = box.clickedButton()
-        if clicked is open_button:
+        if clicked is update_now:
+            _run_update(info)
+        elif clicked is open_button:
             import webbrowser
             webbrowser.open(info.get("url") or GITHUB_URL)
         elif clicked is copy_button:

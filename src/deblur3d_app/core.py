@@ -10,6 +10,8 @@ import json
 import math
 import os
 import socket
+import subprocess
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -267,6 +269,87 @@ def app_update_available() -> Optional[dict]:
     if latest is None or current is None:
         return None
     return info if latest > current else None
+
+
+def _repo_root() -> Optional[Path]:
+    """The git checkout this package runs from, or None for a plain install."""
+    repo = Path(__file__).resolve().parents[2]
+    return repo if (repo / ".git").exists() else None
+
+
+def update_blocked_reason() -> Optional[str]:
+    """Why an in-place update must not be attempted, or None if it is safe.
+
+    The only thing an automatic update can genuinely destroy is uncommitted work
+    in a checkout, so that is what this refuses on.
+    """
+    repo = _repo_root()
+    if repo is None:
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"git is not available, so this copy cannot update itself ({e})."
+    if out.returncode != 0:
+        return f"git could not read {repo}: {out.stderr.strip()[:200]}"
+    changed = [ln for ln in out.stdout.splitlines() if ln.strip()]
+    if changed:
+        return (
+            f"{len(changed)} uncommitted change(s) in {repo}.\n\n"
+            "Updating would overwrite them. Commit or discard them first:\n"
+            + "\n".join(f"  {ln}" for ln in changed[:8])
+            + ("\n  ..." if len(changed) > 8 else "")
+        )
+    return None
+
+
+def update_commands(tag: Optional[str] = None) -> list[list[str]]:
+    """The commands that update this installation, in order."""
+    repo = _repo_root()
+    if repo is not None:
+        return [
+            ["git", "-C", str(repo), "pull", "--ff-only"],
+            # Cheap when nothing changed, and the only thing that picks up a new
+            # dependency or entry point.
+            [sys.executable, "-m", "pip", "install", "-e", str(repo)],
+        ]
+    ref = tag or "main"
+    return [[
+        sys.executable, "-m", "pip", "install", "--upgrade",
+        f"{APP_NAME} @ git+https://github.com/{GITHUB_REPO}@{ref}",
+    ]]
+
+
+def perform_update(tag: Optional[str] = None,
+                   on_output: Optional[Callable[[str], None]] = None) -> bool:
+    """Update this installation in place, streaming output to `on_output`.
+
+    The running process keeps the modules it already imported, so the caller
+    must tell the user to restart; nothing here tries to reload live code.
+    """
+    for cmd in update_commands(tag):
+        if on_output:
+            on_output("$ " + " ".join(cmd))
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            if on_output:
+                on_output(f"could not run: {e}")
+            return False
+        for line in proc.stdout:
+            if on_output:
+                on_output(line.rstrip())
+        if proc.wait() != 0:
+            if on_output:
+                on_output(f"-> failed with exit code {proc.returncode}")
+            return False
+    return True
 
 
 def update_instructions(tag: Optional[str] = None) -> str:
@@ -583,7 +666,8 @@ def run_inference(
 
 
 __all__ = [
-    "HFModelSpec", "HF_REPO_ID", "HF_FILENAME", "TILE_PRESETS", "DEFAULT_PRESET",
+    "HFModelSpec",
+    "perform_update", "update_blocked_reason", "update_commands", "HF_REPO_ID", "HF_FILENAME", "TILE_PRESETS", "DEFAULT_PRESET",
     "InferenceAborted", "apply_controls_slabwise", "app_update_available",
     "cached_model", "clear_residual_cache", "ensure_model_assets", "has_internet",
     "latest_app_release", "load_state", "normalize_float01", "provenance",
